@@ -4,9 +4,9 @@ SignalDesk is a Windows 10 and 11 system health dashboard built with Tauri 2, Ru
 
 ## Install
 
-Use the x64 NSIS setup executable for a per-user installation. The x64 MSI is also available for Windows Installer deployment. Open SignalDesk from the Start menu. SignalDesk uses the Microsoft Edge WebView2 Runtime. On a Windows installation without the runtime, setup can download it. The application and its core monitoring work offline after installation.
+Open the x64 setup executable or MSI and follow the installer prompts. Open SignalDesk from the Start menu. The separately distributed portable executable runs directly with WebView2 installed. Setup can download the Microsoft Edge WebView2 Runtime on a Windows installation where it is missing. Core monitoring works offline once the runtime is available.
 
-The builds are unsigned unless a Windows signing certificate is supplied to the release build. Settings and monitoring history normally live under `%LOCALAPPDATA%\local.signaldesk.monitor`. Use the tray menu to pause, reopen or exit the application. Settings controls start at sign-in and close-to-tray behavior.
+The builds are unsigned unless a Windows signing certificate is supplied to the release build. Settings and monitoring history normally live under `%LOCALAPPDATA%\local.signaldesk.monitor`. Use the tray menu to pause, reopen or exit the application. With tray mode enabled, closing the dashboard releases the WebView while the native monitor continues. Settings controls launch at sign-in and close-to-tray behavior.
 
 ## Monitoring and compatibility
 
@@ -47,6 +47,8 @@ npm run tauri build -- --bundles nsis,msi
 
 Default release artifacts are under `work/SignalDesk/src-tauri/target/release/bundle`, or under the release directory specified by `CARGO_TARGET_DIR`. The application binary supports `signaldesk.exe --self-check <absolute-path-to-json>` for an isolated native telemetry and SQLite smoke check. `SIGNALDESK_DATA_DIR` points desktop smoke tests to a separate app-data directory.
 
+The standalone x64 setup bootstrap can wrap an existing MSI when the NSIS compiler cannot run. It stages the MSI and runs Windows Installer, so both files install the same product. From `work/SignalDesk`, run `./packaging/build-bootstrap.ps1 -Msi <path-to-package.msi> -Output <path-to-setup.exe>`. Build and validate the MSI through Tauri on a host with a working Windows Installer service before public distribution.
+
 ### Architecture
 
 - `work/SignalDesk/src` contains the application shell, shared controls, feature pages, typed frontend IPC models and report formats.
@@ -57,6 +59,6 @@ Default release artifacts are under `work/SignalDesk/src-tauri/target/release/bu
 
 ## Release
 
-Update the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` and `tauri.conf.json`. Refresh the Cargo lockfile and changelog. Run both builds and the smoke tests. Use the Windows build workflow or run the packaging commands locally. Upload the EXE, MSI and SHA-256 sums to a versioned release in the private repository.
+Update the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` and `tauri.conf.json`. Refresh the Cargo lockfile and changelog. Run both builds and the smoke tests. To enable the provided GitHub Actions workflow, copy `docs/windows-build.workflow.yml` to `.github/workflows/windows.yml`. Upload the EXE, MSI and SHA-256 sums to a versioned release in the private repository.
 
 [Windows packaging](https://v2.tauri.app/distribute/windows-installer/) · [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) · [Ollama chat API](https://docs.ollama.com/api/chat)

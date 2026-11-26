@@ -111,3 +111,58 @@ pub fn nvidia() -> Vec<Value> {
   Some(json!({"index":n(0),"name":x[1],"driver":x[2],"utilization":n(3),"vramUsed":n(4).map(|v|v*1048576.),"vramTotal":n(5).map(|v|v*1048576.),"temperature":n(6),"coreClock":n(7),"memoryClock":n(8),"power":n(9),"fan":n(10),"encode":n(11),"decode":n(12)}))
  }).collect()
 }
+
+#[derive(Clone, Copy)]
+pub struct CpuTimes {
+    idle: u64,
+    kernel: u64,
+    user: u64,
+}
+impl CpuTimes {
+    pub fn get() -> Option<Self> {
+        use windows_sys::Win32::{Foundation::FILETIME, System::Threading::GetSystemTimes};
+        let mut idle = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut kernel = idle;
+        let mut user = idle;
+        // The pointers are writable FILETIME structures valid for the full call.
+        if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+            return None;
+        }
+        let ticks = |t: FILETIME| u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime);
+        Some(Self {
+            idle: ticks(idle),
+            kernel: ticks(kernel),
+            user: ticks(user),
+        })
+    }
+    pub fn usage_since(self, prior: Self) -> Option<f64> {
+        let idle = self.idle.checked_sub(prior.idle)?;
+        let total = self
+            .kernel
+            .checked_sub(prior.kernel)?
+            .checked_add(self.user.checked_sub(prior.user)?)?;
+        let busy = total.checked_sub(idle)?;
+        (total > 0).then(|| 100. * busy as f64 / total as f64)
+    }
+}
+
+pub fn firmware() -> (Value, Value) {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+    let Ok(key) =
+        RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(r"HARDWARE\DESCRIPTION\System\BIOS")
+    else {
+        return (Value::Null, Value::Null);
+    };
+    let prop = |name: &str| {
+        key.get_value::<String, _>(name)
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+    };
+    (
+        json!({"Manufacturer":prop("SystemManufacturer"),"Model":prop("SystemProductName"),"SystemType":std::env::consts::ARCH}),
+        json!({"Manufacturer":prop("BIOSVendor"),"SMBIOSBIOSVersion":prop("BIOSVersion")}),
+    )
+}

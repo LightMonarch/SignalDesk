@@ -12,6 +12,7 @@ pub struct Monitor {
     last: Instant,
     ready: bool,
     freq_tick: u8,
+    cpu_times: Option<native::CpuTimes>,
 }
 fn list(data: &Value) -> impl Iterator<Item = &Value> {
     data.as_array().into_iter().flatten()
@@ -43,6 +44,7 @@ impl Monitor {
             last: Instant::now(),
             ready: false,
             freq_tick: 0,
+            cpu_times: native::CpuTimes::get(),
         }
     }
     pub fn sample(&mut self, s: &Value) -> Value {
@@ -51,6 +53,18 @@ impl Monitor {
         let ready = self.ready && elapsed <= 75.;
         self.ready = true;
         self.sys.refresh_cpu_usage();
+        let times = native::CpuTimes::get();
+        let cpu_usage = if ready {
+            times
+                .zip(self.cpu_times)
+                .and_then(|(current, previous)| current.usage_since(previous))
+                .or_else(|| {
+                    (!self.sys.cpus().is_empty()).then(|| f64::from(self.sys.global_cpu_usage()))
+                })
+        } else {
+            None
+        };
+        self.cpu_times = times;
         if self.freq_tick == 0 {
             self.sys.refresh_cpu_frequency();
         }
@@ -183,7 +197,7 @@ impl Monitor {
         json!({"ts":crate::now(),"host":System::host_name(),"os":System::long_os_version(),"boot":System::boot_time(),"uptime":System::uptime(),
         "cpu":{"name":cpu.map(|c|c.brand().trim()),"vendor":cpu.map(|c|c.vendor_id()),"architecture":System::cpu_arch(),"physical":self.sys.physical_core_count(),"logical":cores.len(),"cores":cores,"power":sensor(s,"/","Power",|name|name.contains("cpu package")||name=="package")},
         "memory":memory,"disks":disks,"battery":battery,"adapters":adapters,"connected":connected,"providers":s,"processes":procs,
-        "metrics":{"cpu":ready.then(||self.sys.global_cpu_usage()),"gpu":gpu_load,"memory":(total>0).then(||100.*used as f64/total as f64),"disk":disk_pct,"cpuTemp":cpu_temp,"gpuTemp":gpu_temp,"fan":fan,"driveTemp":drive_temp,"diskRead":rate("read"),"diskWrite":rate("write"),"battery":battery["pct"],"batteryHealth":battery["health"],"rx":adapter_sum("rx"),"tx":adapter_sum("tx"),"processes":procs.len()}
+        "metrics":{"cpu":cpu_usage,"gpu":gpu_load,"memory":(total>0).then(||100.*used as f64/total as f64),"disk":disk_pct,"cpuTemp":cpu_temp,"gpuTemp":gpu_temp,"fan":fan,"driveTemp":drive_temp,"diskRead":rate("read"),"diskWrite":rate("write"),"battery":battery["pct"],"batteryHealth":battery["health"],"rx":adapter_sum("rx"),"tx":adapter_sum("tx"),"processes":procs.len()}
         })
     }
 }

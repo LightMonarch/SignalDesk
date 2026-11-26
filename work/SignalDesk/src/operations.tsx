@@ -1,78 +1,958 @@
-import {useEffect,useRef,useState} from 'react';
-import {ArrowLeft,ArrowRight,Check,CircleStop,Download,Eye,FlaskConical,Play,RefreshCw,ScanLine,ShieldAlert} from 'lucide-react';
-import {api,bytes,date,duration,errorText,num,pct,str,tsNow,type Bench,type Config,type Event,type Issue,type Process,type Sample,type Startup} from './api';
-import {useLoad} from './hooks';
-import {Badge,Button,Confirm,Dialog,Empty,Filter,Notice,PageTitle,Pairs,Panel,Select,Table} from './components/ui';
-import {exportData} from './reports';
-import {gpuBenchmark} from './webgl';
-const safe=(v:unknown)=>str(v).toLowerCase();
-const tone=(s:string)=>/critical|error/i.test(s)?'bad':/warn/i.test(s)?'warn':'neutral';
-export function Processes({config}:{config:Config}){
- const {value,load,error}=useLoad<Process[]>('processes',[]);
- const [query,setQuery]=useState(''),[sort,setSort]=useState<'name'|'pid'|'cpu'|'memory'|'disk'>('cpu'),[desc,setDesc]=useState(true),[page,setPage]=useState(0),[mode,setMode]=useState('All processes');
- const [detail,setDetail]=useState<Process|null>(null),[confirm,setConfirm]=useState(false),[failure,setFailure]=useState(''),[stopping,setStopping]=useState(false);
- useEffect(()=>{const refresh=()=>{if(document.visibilityState==='visible')void load()};refresh();const id=setInterval(refresh,Math.max(config.interval,2)*1000);return()=>clearInterval(id)},[load,config.interval]);
- const filtered=value.filter(x=>(!query||safe(x.name+' '+x.pid+' '+(x.path??'')).includes(query.toLowerCase()))&&(mode==='All processes'||(x.cpu??0)>=10||x.memory>=1024**3));
- filtered.sort((a,b)=>{const v=sort==='name'?a.name.localeCompare(b.name):(a[sort]??-1)-(b[sort]??-1);return desc?-v:v});
- const p=Math.min(page,Math.max(0,Math.ceil(filtered.length/25)-1));
- const publisher=useLoad<{company?:string;signer?:string;status?:string}|null>('process_publisher',null);
- useEffect(()=>{publisher.setValue(null);if(detail)void publisher.load({pid:detail.pid,started:detail.started})},[detail?.pid,detail?.started,publisher.load]);
- const selected=value.find(x=>x.pid===detail?.pid&&x.started===detail.started)??detail;
- async function end(){if(!selected)return;setFailure('');setStopping(true);try{await api('end_process',{pid:selected.pid,started:selected.started});setDetail(null);setConfirm(false);void load()}catch(e){setFailure(errorText(e));setConfirm(false)}finally{setStopping(false)}}
- return <><PageTitle title="Processes" description="Inspect running processes and their current resource usage." actions={<Badge>{num(value.length)} processes</Badge>}/>
- <Panel title="Running processes" action={<div className="tools"><Filter label="Search processes" value={query} onChange={v=>{setQuery(v);setPage(0)}}/><Select label="Process filter" options={['All processes','Resource-intensive']} value={mode} onChange={v=>{setMode(v);setPage(0)}}/></div>}>
- {error&&<Notice bad>{error}</Notice>}
- {filtered.length?<Table headers={([['name','Process'],['pid','PID'],['cpu','CPU'],['memory','Memory'],['disk','I/O']] as const).map(([key,label])=><button className="sort" onClick={()=>{setDesc(sort===key?!desc:key!=='name');setSort(key);setPage(0)}}>{label}{sort===key?(desc?' ↓':' ↑'):''}</button>).concat(<span>GPU</span>,<span>Status</span>,<span>Details</span>)}>{filtered.slice(p*25,p*25+25).map(x=><tr key={x.pid}><td>{x.name||'Unnamed process'}</td><td>{x.pid}</td><td>{pct(x.cpu)}</td><td>{bytes(x.memory)}</td><td>{bytes(x.disk,true)}</td><td>{pct(x.gpu)}</td><td>{x.status==='Unknown(0)'?'Unavailable':x.status}</td><td><Button aria-label={'Details for '+x.name} onClick={()=>{setDetail(x);setFailure('')}} variant="ghost"><Eye size={15}/></Button></td></tr>)}</Table>:<Empty text="No matching processes"/>}<Pager count={filtered.length} page={p} size={25} set={setPage}/></Panel>
- {selected&&!confirm&&<Dialog title={selected.name||'Process details'} close={()=>setDetail(null)}>{failure&&<Notice bad>{failure}</Notice>}<Pairs data={ [['PID',selected.pid],['Path',str(selected.path)],['Publisher',publisher.busy?'Checking…':str(publisher.value?.signer??publisher.value?.company)],['Signature status',str(publisher.value?.status)],['Status',selected.status],['Uptime',selected.started?duration(Math.max(0,tsNow()-selected.started)):'Unavailable'],['Started',selected.started?date(selected.started):'Unavailable'],['CPU',pct(selected.cpu)],['Memory',bytes(selected.memory)],['I/O',bytes(selected.disk,true)]]}/><div className="dialog-actions"><Button className="destructive" disabled={stopping||selected.pid<=4||!selected.started} onClick={()=>setConfirm(true)}>End process</Button></div></Dialog>}
- {confirm&&selected&&<Confirm title="End selected process?" description={selected.name+' (PID '+selected.pid+') will be terminated. Unsaved work in the application may be lost.'} label="End process" run={()=>void end()} close={()=>setConfirm(false)}/>}</>;
+import { useEffect, useRef, useState } from "react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  CircleStop,
+  Download,
+  Eye,
+  FlaskConical,
+  Play,
+  RefreshCw,
+  ScanLine,
+  ShieldAlert,
+} from "lucide-react";
+import {
+  api,
+  bytes,
+  date,
+  duration,
+  errorText,
+  num,
+  pct,
+  str,
+  tsNow,
+  type Bench,
+  type Config,
+  type Event,
+  type Issue,
+  type Process,
+  type Sample,
+  type Startup,
+} from "./api";
+import { useLoad } from "./hooks";
+import {
+  Badge,
+  Button,
+  Confirm,
+  Dialog,
+  Empty,
+  Filter,
+  Notice,
+  PageTitle,
+  Pairs,
+  Panel,
+  Select,
+  Table,
+} from "./components/ui";
+import { exportData } from "./reports";
+import { gpuBenchmark } from "./webgl";
+const safe = (v: unknown) => str(v).toLowerCase();
+const tone = (s: string) =>
+  /critical|error/i.test(s) ? "bad" : /warn/i.test(s) ? "warn" : "neutral";
+export function Processes({ config }: { config: Config }) {
+  const { value, load, error } = useLoad<Process[]>("processes", []);
+  const [query, setQuery] = useState(""),
+    [sort, setSort] = useState<"name" | "pid" | "cpu" | "memory" | "disk">(
+      "cpu",
+    ),
+    [desc, setDesc] = useState(true),
+    [page, setPage] = useState(0),
+    [mode, setMode] = useState("All processes");
+  const [detail, setDetail] = useState<Process | null>(null),
+    [confirm, setConfirm] = useState(false),
+    [failure, setFailure] = useState(""),
+    [stopping, setStopping] = useState(false);
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === "visible") void load();
+    };
+    refresh();
+    const id = setInterval(refresh, Math.max(config.interval, 2) * 1000);
+    return () => clearInterval(id);
+  }, [load, config.interval]);
+  const filtered = value.filter(
+    (x) =>
+      (!query ||
+        safe(x.name + " " + x.pid + " " + (x.path ?? "")).includes(
+          query.toLowerCase(),
+        )) &&
+      (mode === "All processes" || (x.cpu ?? 0) >= 10 || x.memory >= 1024 ** 3),
+  );
+  filtered.sort((a, b) => {
+    const v =
+      sort === "name"
+        ? a.name.localeCompare(b.name)
+        : (a[sort] ?? -1) - (b[sort] ?? -1);
+    return desc ? -v : v;
+  });
+  const p = Math.min(page, Math.max(0, Math.ceil(filtered.length / 25) - 1));
+  const publisher = useLoad<{
+    company?: string;
+    signer?: string;
+    status?: string;
+  } | null>("process_publisher", null);
+  useEffect(() => {
+    publisher.setValue(null);
+    if (detail)
+      void publisher.load({ pid: detail.pid, started: detail.started });
+  }, [detail?.pid, detail?.started, publisher.load]);
+  const selected =
+    value.find((x) => x.pid === detail?.pid && x.started === detail.started) ??
+    detail;
+  async function end() {
+    if (!selected) return;
+    setFailure("");
+    setStopping(true);
+    try {
+      await api("end_process", {
+        pid: selected.pid,
+        started: selected.started,
+      });
+      setDetail(null);
+      setConfirm(false);
+      void load();
+    } catch (e) {
+      setFailure(errorText(e));
+      setConfirm(false);
+    } finally {
+      setStopping(false);
+    }
+  }
+  return (
+    <>
+      <PageTitle
+        title="Processes"
+        description="Inspect running processes and their current resource usage."
+        actions={<Badge>{num(value.length)} processes</Badge>}
+      />
+      <Panel
+        title="Running processes"
+        action={
+          <div className="tools">
+            <Filter
+              label="Search processes"
+              value={query}
+              onChange={(v) => {
+                setQuery(v);
+                setPage(0);
+              }}
+            />
+            <Select
+              label="Process filter"
+              options={["All processes", "Resource-intensive"]}
+              value={mode}
+              onChange={(v) => {
+                setMode(v);
+                setPage(0);
+              }}
+            />
+          </div>
+        }
+      >
+        {error && <Notice bad>{error}</Notice>}
+        {filtered.length ? (
+          <Table
+            headers={(
+              [
+                ["name", "Process"],
+                ["pid", "PID"],
+                ["cpu", "CPU"],
+                ["memory", "Memory"],
+                ["disk", "I/O"],
+              ] as const
+            )
+              .map(([key, label]) => (
+                <button
+                  className="sort"
+                  onClick={() => {
+                    setDesc(sort === key ? !desc : key !== "name");
+                    setSort(key);
+                    setPage(0);
+                  }}
+                >
+                  {label}
+                  {sort === key ? (desc ? " ↓" : " ↑") : ""}
+                </button>
+              ))
+              .concat(
+                <span>GPU</span>,
+                <span>Status</span>,
+                <span>Details</span>,
+              )}
+          >
+            {filtered.slice(p * 25, p * 25 + 25).map((x) => (
+              <tr key={x.pid}>
+                <td>{x.name || "Unnamed process"}</td>
+                <td>{x.pid}</td>
+                <td>{pct(x.cpu)}</td>
+                <td>{bytes(x.memory)}</td>
+                <td>{bytes(x.disk, true)}</td>
+                <td>{pct(x.gpu)}</td>
+                <td>{x.status === "Unknown(0)" ? "Unavailable" : x.status}</td>
+                <td>
+                  <Button
+                    aria-label={"Details for " + x.name}
+                    onClick={() => {
+                      setDetail(x);
+                      setFailure("");
+                    }}
+                    variant="ghost"
+                  >
+                    <Eye size={15} />
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </Table>
+        ) : (
+          <Empty text="No matching processes" />
+        )}
+        <Pager count={filtered.length} page={p} size={25} set={setPage} />
+      </Panel>
+      {selected && !confirm && (
+        <Dialog
+          title={selected.name || "Process details"}
+          close={() => setDetail(null)}
+        >
+          {failure && <Notice bad>{failure}</Notice>}
+          <Pairs
+            data={[
+              ["PID", selected.pid],
+              ["Path", str(selected.path)],
+              [
+                "Publisher",
+                publisher.busy
+                  ? "Checking…"
+                  : str(publisher.value?.signer ?? publisher.value?.company),
+              ],
+              ["Signature status", str(publisher.value?.status)],
+              ["Status", selected.status],
+              [
+                "Uptime",
+                selected.started
+                  ? duration(Math.max(0, tsNow() - selected.started))
+                  : "Unavailable",
+              ],
+              [
+                "Started",
+                selected.started ? date(selected.started) : "Unavailable",
+              ],
+              ["CPU", pct(selected.cpu)],
+              ["Memory", bytes(selected.memory)],
+              ["I/O", bytes(selected.disk, true)],
+            ]}
+          />
+          <div className="dialog-actions">
+            <Button
+              className="destructive"
+              disabled={stopping || selected.pid <= 4 || !selected.started}
+              onClick={() => setConfirm(true)}
+            >
+              End process
+            </Button>
+          </div>
+        </Dialog>
+      )}
+      {confirm && selected && (
+        <Confirm
+          title="End selected process?"
+          description={
+            selected.name +
+            " (PID " +
+            selected.pid +
+            ") will be terminated. Unsaved work in the application may be lost."
+          }
+          label="End process"
+          run={() => void end()}
+          close={() => setConfirm(false)}
+        />
+      )}
+    </>
+  );
 }
-function Pager({count,page,size,set}:{count:number;page:number;size:number;set:(p:number)=>void}){const pages=Math.max(1,Math.ceil(count/size));return <div className="pagination"><span>Page {page+1} of {pages} · {count} results</span><Button aria-label="Previous page" disabled={page===0} onClick={()=>set(page-1)}><ArrowLeft size={15}/></Button><Button aria-label="Next page" disabled={page+1>=pages} onClick={()=>set(page+1)}><ArrowRight size={15}/></Button></div>}
-export function StartupManager(){
- const s=useLoad<Startup[]>('startup_entries',[]);const [pick,setPick]=useState<Startup|null>(null),[error,setError]=useState('');
- useEffect(()=>{void s.load()},[s.load]);
- return <><PageTitle title="Startup Manager" description="Review applications configured to launch at Windows sign-in." actions={<Button onClick={()=>void s.load()}><RefreshCw size={15}/> Refresh</Button>}/>
- {(error||s.error)&&<Notice bad>{error||s.error}</Notice>}<Panel title="Startup entries" subtitle="Current-user Run entries can be changed here. Windows manages the other sources.">
- {s.value.length?<Table headers={['Application','Scope and source','Location / command','Status','Action']}>{s.value.map(x=><tr key={x.scope+x.kind+x.name}><td>{x.name}</td><td>{x.scope}<small>{x.kind}</small></td><td className="path" title={x.path}>{x.path}</td><td><Badge tone={x.enabled?'ok':'neutral'}>{x.enabled==null?'Unavailable':x.enabled?'Enabled':'Disabled'}</Badge></td><td>{x.editable&&x.name.toLowerCase()!=='signaldesk'?<Button onClick={()=>setPick(x)}>{x.enabled?'Disable':'Enable'}</Button>:'—'}</td></tr>)}</Table>:<Empty text={s.busy?'Loading startup entries':'No startup entries returned'} loading={s.busy}/>}</Panel>
- {pick&&<Confirm title={(pick.enabled?'Disable ':'Enable ')+pick.name+' at sign-in?'} description="You can reverse this change from Startup Manager." label={pick.enabled?'Disable':'Enable'} close={()=>setPick(null)} run={async()=>{const x=pick;setPick(null);setError('');try{await api('startup_toggle',{name:x.name,enabled:!x.enabled});void s.load()}catch(e){setError(errorText(e))}}}/>}</>;
+function Pager({
+  count,
+  page,
+  size,
+  set,
+}: {
+  count: number;
+  page: number;
+  size: number;
+  set: (p: number) => void;
+}) {
+  const pages = Math.max(1, Math.ceil(count / size));
+  return (
+    <div className="pagination">
+      <span>
+        Page {page + 1} of {pages} · {count} results
+      </span>
+      <Button
+        aria-label="Previous page"
+        disabled={page === 0}
+        onClick={() => set(page - 1)}
+      >
+        <ArrowLeft size={15} />
+      </Button>
+      <Button
+        aria-label="Next page"
+        disabled={page + 1 >= pages}
+        onClick={() => set(page + 1)}
+      >
+        <ArrowRight size={15} />
+      </Button>
+    </div>
+  );
 }
-export function Issues({sample,diagnostics=false}:{sample:Sample|null;diagnostics?:boolean}){
- const kind=diagnostics?'diagnostic':'alert';const r=useLoad<Issue[]>('records',[]);const scan=useLoad<Issue[]>('run_diagnostics',[]);const [filter,setFilter]=useState('Open and acknowledged');const [error,setError]=useState('');
- useEffect(()=>{void r.load({kind})},[r.load,kind,Math.floor((sample?.ts??0)/12)]);
- const visible=r.value.filter(x=>filter==='All'||filter==='Open and acknowledged'?!['Dismissed','Resolved'].includes(x.status??'')||filter==='All':x.status===filter);
- const current=diagnostics?(sample?.issues??[]):[];
- async function mark(x:Issue,status:string){setError('');try{await api('mark_issue',{kind,id:x.id,ts:x.ts,status});await r.load({kind})}catch(e){setError(errorText(e))}}
- return <><PageTitle title={diagnostics?'Diagnostics':'Alerts'} description={diagnostics?'Investigate current readings, driver state and recent Windows errors.':'Review threshold crossings and hardware warnings.'} actions={diagnostics?<Button variant="primary" disabled={scan.busy||!sample} onClick={async()=>{await scan.load();void r.load({kind})}}><ScanLine size={16}/> {scan.busy?'Scanning…':'Run diagnostic scan'}</Button>:<Button onClick={()=>void r.load({kind})}><RefreshCw size={15}/> Refresh</Button>}/>
- {(r.error||scan.error||error)&&<Notice bad>{r.error||scan.error||error}</Notice>}
- {diagnostics&&<Panel title="Current findings" subtitle="Sustained resource and temperature thresholds use the duration in Settings.">{current.length?current.map(x=><IssueRow key={x.id} issue={x}/>):<Empty text="No current threshold findings" detail="Run a diagnostic scan to inspect Windows events, drivers and startup entries."/>}</Panel>}
- <Panel title={diagnostics?'Diagnostic history':'Alert history'} action={<Select label="Issue status" value={filter} onChange={setFilter} options={['Open and acknowledged','All','Acknowledged','Dismissed','Resolved']}/>}>{visible.length?visible.map(x=><IssueRow key={x.id+x.ts} issue={x} action={<div className="tools">{x.status!=='Acknowledged'&&x.status!=='Dismissed'&&x.status!=='Resolved'&&<Button onClick={()=>void mark(x,'Acknowledged')}><Check size={15}/> Acknowledge</Button>}<Button onClick={()=>void mark(x,['Dismissed','Resolved'].includes(x.status??'')?'Open':diagnostics?'Resolved':'Dismissed')}>{['Dismissed','Resolved'].includes(x.status??'')?'Reopen':diagnostics?'Resolve':'Dismiss'}</Button></div>}/>):<Empty text="No matching records"/>}</Panel></>;
+export function StartupManager() {
+  const s = useLoad<Startup[]>("startup_entries", []);
+  const [pick, setPick] = useState<Startup | null>(null),
+    [error, setError] = useState("");
+  useEffect(() => {
+    void s.load();
+  }, [s.load]);
+  return (
+    <>
+      <PageTitle
+        title="Startup Manager"
+        description="Review applications configured to launch at Windows sign-in."
+        actions={
+          <Button onClick={() => void s.load()}>
+            <RefreshCw size={15} /> Refresh
+          </Button>
+        }
+      />
+      {(error || s.error) && <Notice bad>{error || s.error}</Notice>}
+      <Panel
+        title="Startup entries"
+        subtitle="Current-user Run entries can be changed here. Windows manages the other sources."
+      >
+        {s.value.length ? (
+          <Table
+            headers={[
+              "Application",
+              "Scope and source",
+              "Location / command",
+              "Status",
+              "Action",
+            ]}
+          >
+            {s.value.map((x) => (
+              <tr key={x.scope + x.kind + x.name}>
+                <td>{x.name}</td>
+                <td>
+                  {x.scope}
+                  <small>{x.kind}</small>
+                </td>
+                <td className="path" title={x.path}>
+                  {x.path}
+                </td>
+                <td>
+                  <Badge tone={x.enabled ? "ok" : "neutral"}>
+                    {x.enabled == null
+                      ? "Unavailable"
+                      : x.enabled
+                        ? "Enabled"
+                        : "Disabled"}
+                  </Badge>
+                </td>
+                <td>
+                  {x.editable && x.name.toLowerCase() !== "signaldesk" ? (
+                    <Button onClick={() => setPick(x)}>
+                      {x.enabled ? "Disable" : "Enable"}
+                    </Button>
+                  ) : (
+                    "—"
+                  )}
+                </td>
+              </tr>
+            ))}
+          </Table>
+        ) : (
+          <Empty
+            text={
+              s.busy ? "Loading startup entries" : "No startup entries returned"
+            }
+            loading={s.busy}
+          />
+        )}
+      </Panel>
+      {pick && (
+        <Confirm
+          title={
+            (pick.enabled ? "Disable " : "Enable ") + pick.name + " at sign-in?"
+          }
+          description="You can reverse this change from Startup Manager."
+          label={pick.enabled ? "Disable" : "Enable"}
+          close={() => setPick(null)}
+          run={async () => {
+            const x = pick;
+            setPick(null);
+            setError("");
+            try {
+              await api("startup_toggle", {
+                name: x.name,
+                enabled: !x.enabled,
+              });
+              void s.load();
+            } catch (e) {
+              setError(errorText(e));
+            }
+          }}
+        />
+      )}
+    </>
+  );
 }
-function IssueRow({issue:x,action}:{issue:Issue;action?:React.ReactNode}){return <details className="issue"><summary><ShieldAlert size={17}/><div><strong>{x.title}</strong><small>{x.component} · {date(x.ts)} · {x.status??'Open'}</small></div><Badge tone={tone(x.severity)}>{x.severity}</Badge></summary><Pairs data={ [['Evidence',x.evidence],['Possible cause',x.cause],['Troubleshooting',x.action]]}/>{action}</details>}
-const eventKey=(e:Event)=>e.LogName+':'+e.RecordId;
-const eventInfo:Record<number,string>={41:'Windows restarted without a clean shutdown. Check the preceding events for possible causes.',1000:'An application reported a crash. The message may identify the failing executable and module.',1001:'Windows recorded an error report or bug check. Read the provider and report details.',6008:'Windows recorded the previous shutdown as unexpected.',7000:'Service Control Manager reported a service startup failure.',7031:'A Windows service terminated unexpectedly.'};
-export function EventLogs(){
- const e=useLoad<Event[]>('event_logs',[]);const [page,setPage]=useState(0),[query,setQuery]=useState(''),[level,setLevel]=useState('All severities'),[source,setSource]=useState('All sources'),[detail,setDetail]=useState<Event|null>(null),[start,setStart]=useState(''),[end,setEnd]=useState(''),[selection,setSelection]=useState<Event[]>([]),[error,setError]=useState('');
- const args=()=>({page,start:start?Date.parse(start)/1000:null,end:end?Date.parse(end)/1000:null});
- useEffect(()=>{void e.load(args())},[e.load,page,start,end]);
- const found=e.value.filter(x=>(level==='All severities'||x.LevelDisplayName===level)&&(source==='All sources'||x.ProviderName===source)&&(!query||safe([x.Id,x.ProviderName,x.Message,x.LogName].join(' ')).includes(query.toLowerCase())));
- return <><PageTitle title="Event Logs" description="Search warnings and errors from the Windows System and Application logs." actions={<Button disabled={selection.length===0} onClick={()=>void exportData('windows-events',{events:selection},'CSV').catch(e=>setError(errorText(e)))}><Download size={16}/> Export selected ({selection.length})</Button>}/>
- {(e.error||error)&&<Notice bad>{e.error||error}</Notice>}<Panel title="Windows events" subtitle="Search and source filters apply to the current 60-event page." action={<Button disabled={e.busy} onClick={()=>void e.load(args())}><RefreshCw size={15}/> Refresh</Button>}><div className="tools form-bar"><Filter value={query} onChange={setQuery} label="Search events or IDs"/><Select label="Severity filter" value={level} onChange={setLevel} options={['All severities',...new Set(e.value.map(x=>x.LevelDisplayName).filter(Boolean))]}/><Select label="Event source" value={source} onChange={setSource} options={['All sources',...new Set(e.value.map(x=>x.ProviderName).filter(Boolean))]}/><label>From <input type="datetime-local" value={start} onChange={x=>{setStart(x.target.value);setPage(0)}}/></label><label>To <input type="datetime-local" value={end} onChange={x=>{setEnd(x.target.value);setPage(0)}}/></label></div>
- {found.length?<Table headers={['Select','Time','Severity','Source','Log','ID','Details']}>{found.map(x=><tr key={eventKey(x)}><td><input type="checkbox" aria-label={'Select event '+eventKey(x)} checked={selection.some(y=>eventKey(y)===eventKey(x))} onChange={ev=>setSelection(ev.target.checked?[...selection,x]:selection.filter(y=>eventKey(y)!==eventKey(x)))}/></td><td>{date(x.ts)}</td><td><Badge tone={tone(x.LevelDisplayName??'')}>{x.LevelDisplayName||'Unknown'}</Badge></td><td>{x.ProviderName}</td><td>{x.LogName}</td><td>{x.Id}</td><td><Button variant="ghost" onClick={()=>setDetail(x)}>Inspect</Button></td></tr>)}</Table>:<Empty loading={e.busy} text={e.busy?'Loading Windows events':'No matching events'}/>}<div className="pagination"><span>Page {page+1}</span><Button disabled={page===0||e.busy} onClick={()=>{setSource('All sources');setPage(page-1)}}><ArrowLeft size={15}/> Previous</Button><Button disabled={e.value.length<60||page>=99||e.busy} onClick={()=>{setSource('All sources');setPage(page+1)}}>Next <ArrowRight size={15}/></Button></div></Panel>
- {detail&&<Dialog title={'Event '+detail.Id+' · '+detail.ProviderName} close={()=>setDetail(null)}><Pairs data={ [['Time',date(detail.ts)],['Log',detail.LogName],['Severity',detail.LevelDisplayName],['Explanation',eventInfo[detail.Id]??'Review the Windows provider message below.']]}/><pre className="code-text">{detail.Message||'Windows did not return an event message.'}</pre></Dialog>}</>;
+export function Issues({
+  sample,
+  diagnostics = false,
+}: {
+  sample: Sample | null;
+  diagnostics?: boolean;
+}) {
+  const kind = diagnostics ? "diagnostic" : "alert";
+  const r = useLoad<Issue[]>("records", []);
+  const scan = useLoad<Issue[]>("run_diagnostics", []);
+  const [filter, setFilter] = useState("Open and acknowledged");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    void r.load({ kind });
+  }, [r.load, kind, Math.floor((sample?.ts ?? 0) / 12)]);
+  const visible = r.value.filter((x) =>
+    filter === "All" || filter === "Open and acknowledged"
+      ? !["Dismissed", "Resolved"].includes(x.status ?? "") || filter === "All"
+      : x.status === filter,
+  );
+  const current = diagnostics ? (sample?.issues ?? []) : [];
+  async function mark(x: Issue, status: string) {
+    setError("");
+    try {
+      await api("mark_issue", { kind, id: x.id, ts: x.ts, status });
+      await r.load({ kind });
+    } catch (e) {
+      setError(errorText(e));
+    }
+  }
+  return (
+    <>
+      <PageTitle
+        title={diagnostics ? "Diagnostics" : "Alerts"}
+        description={
+          diagnostics
+            ? "Investigate current readings, driver state and recent Windows errors."
+            : "Review threshold crossings and hardware warnings."
+        }
+        actions={
+          diagnostics ? (
+            <Button
+              variant="primary"
+              disabled={scan.busy || !sample}
+              onClick={async () => {
+                await scan.load();
+                void r.load({ kind });
+              }}
+            >
+              <ScanLine size={16} />{" "}
+              {scan.busy ? "Scanning…" : "Run diagnostic scan"}
+            </Button>
+          ) : (
+            <Button onClick={() => void r.load({ kind })}>
+              <RefreshCw size={15} /> Refresh
+            </Button>
+          )
+        }
+      />
+      {(r.error || scan.error || error) && (
+        <Notice bad>{r.error || scan.error || error}</Notice>
+      )}
+      {diagnostics && (
+        <Panel
+          title="Current findings"
+          subtitle="Sustained resource and temperature thresholds use the duration in Settings."
+        >
+          {current.length ? (
+            current.map((x) => <IssueRow key={x.id} issue={x} />)
+          ) : (
+            <Empty
+              text="No current threshold findings"
+              detail="Run a diagnostic scan to inspect Windows events, drivers and startup entries."
+            />
+          )}
+        </Panel>
+      )}
+      <Panel
+        title={diagnostics ? "Diagnostic history" : "Alert history"}
+        action={
+          <Select
+            label="Issue status"
+            value={filter}
+            onChange={setFilter}
+            options={[
+              "Open and acknowledged",
+              "All",
+              "Acknowledged",
+              "Dismissed",
+              "Resolved",
+            ]}
+          />
+        }
+      >
+        {visible.length ? (
+          visible.map((x) => (
+            <IssueRow
+              key={x.id + x.ts}
+              issue={x}
+              action={
+                <div className="tools">
+                  {x.status !== "Acknowledged" &&
+                    x.status !== "Dismissed" &&
+                    x.status !== "Resolved" && (
+                      <Button onClick={() => void mark(x, "Acknowledged")}>
+                        <Check size={15} /> Acknowledge
+                      </Button>
+                    )}
+                  <Button
+                    onClick={() =>
+                      void mark(
+                        x,
+                        ["Dismissed", "Resolved"].includes(x.status ?? "")
+                          ? "Open"
+                          : diagnostics
+                            ? "Resolved"
+                            : "Dismissed",
+                      )
+                    }
+                  >
+                    {["Dismissed", "Resolved"].includes(x.status ?? "")
+                      ? "Reopen"
+                      : diagnostics
+                        ? "Resolve"
+                        : "Dismiss"}
+                  </Button>
+                </div>
+              }
+            />
+          ))
+        ) : (
+          <Empty text="No matching records" />
+        )}
+      </Panel>
+    </>
+  );
 }
-export function Benchmarks({config:c,sample:s}:{config:Config;sample:Sample|null}){
- const r=useLoad<Bench[]>('records',[]);const [kind,setKind]=useState('CPU'),[active,setActive]=useState(''),[status,setStatus]=useState(0),[error,setError]=useState(''),[last,setLast]=useState<Bench|null>(null);
- const control=useRef({cancel:false,hot:false});
- const hottest=Math.max(...[s?.metrics.cpuTemp,s?.metrics.gpuTemp,s?.metrics.driveTemp].filter((v):v is number=>typeof v==='number'),-Infinity);
- useEffect(()=>{control.current.hot=hottest>=c.benchmarkLimit},[hottest,c.benchmarkLimit]);
- useEffect(()=>{void r.load({kind:'benchmark'});return()=>{control.current.cancel=true}},[r.load]);
- useEffect(()=>{if(!active||active==='GPU')return;const timer=setInterval(()=>void api<{progress:number}>('benchmark_status').then(x=>setStatus(x.progress)).catch(()=>{}),250);return()=>clearInterval(timer)},[active]);
- async function run(){setError('');setStatus(0);setLast(null);setActive(kind);control.current.cancel=false;
- try{if(kind==='GPU'){const result=await gpuBenchmark(c.benchSeconds,()=>control.current.cancel||control.current.hot,setStatus);setLast(await api<Bench>('gpu_result',result))}else setLast(await api<Bench>('start_benchmark',{kind}));void r.load({kind:'benchmark'})}
- catch(e){setError(errorText(e))}finally{setActive('')}}
- return <><PageTitle title="Benchmarks" description="Run short, user-initiated performance tests and compare recorded results."/>
- <Panel title="Benchmark configuration" icon={FlaskConical} action={<div className="tools"><Select label="Benchmark type" value={kind} onChange={setKind} options={['CPU','GPU','Memory','Storage','Network']}/><Button variant="primary" disabled={!!active||hottest>=c.benchmarkLimit} onClick={()=>void run()}><Play size={15}/> Run benchmark</Button></div>}>
- <Pairs data={ [['Compute test duration',c.benchSeconds+' s'],['Temperature cutoff',c.benchmarkLimit+' °C'],['Current peak sensor',Number.isFinite(hottest)?num(hottest,1)+' °C':'Unavailable'],['Storage workload','128 MiB temporary file in the app data directory']]}/>
- {active&&<div className="tools form-bar"><progress aria-label="Benchmark progress" value={status} max={100}/><span>{active} · {status}%</span><Button onClick={()=>{control.current.cancel=true;if(active!=='GPU')void api('cancel_benchmark')}}><CircleStop size={15}/> Cancel</Button></div>}
- {error&&<Notice bad>{error}</Notice>}{last&&<Notice>{last.kind} completed with {num(last.value,1)} {last.unit}.</Notice>}</Panel>
- <Panel title="Benchmark history">{r.value.length?<Table headers={['Time','Test','Result','Duration','Additional readings']}>{r.value.map((x,i)=><tr key={i}><td>{date(x.ts)}</td><td>{x.kind}</td><td>{num(x.value,1)} {x.unit}</td><td>{num(x.duration,2)} s</td><td>{x.read!=null?num(x.read,1)+' MiB/s buffered read':x.loss!=null?pct(x.loss)+' loss':x.note??'—'}</td></tr>)}</Table>:<Empty text="No benchmark results yet"/>}</Panel></>;
+function IssueRow({
+  issue: x,
+  action,
+}: {
+  issue: Issue;
+  action?: React.ReactNode;
+}) {
+  return (
+    <details className="issue">
+      <summary>
+        <ShieldAlert size={17} />
+        <div>
+          <strong>{x.title}</strong>
+          <small>
+            {x.component} · {date(x.ts)} · {x.status ?? "Open"}
+          </small>
+        </div>
+        <Badge tone={tone(x.severity)}>{x.severity}</Badge>
+      </summary>
+      <Pairs
+        data={[
+          ["Evidence", x.evidence],
+          ["Possible cause", x.cause],
+          ["Troubleshooting", x.action],
+        ]}
+      />
+      {action}
+    </details>
+  );
+}
+const eventKey = (e: Event) => e.LogName + ":" + e.RecordId;
+const eventInfo: Record<number, string> = {
+  41: "Windows restarted without a clean shutdown. Check the preceding events for possible causes.",
+  1000: "An application reported a crash. The message may identify the failing executable and module.",
+  1001: "Windows recorded an error report or bug check. Read the provider and report details.",
+  6008: "Windows recorded the previous shutdown as unexpected.",
+  7000: "Service Control Manager reported a service startup failure.",
+  7031: "A Windows service terminated unexpectedly.",
+};
+export function EventLogs() {
+  const e = useLoad<Event[]>("event_logs", []);
+  const [page, setPage] = useState(0),
+    [query, setQuery] = useState(""),
+    [level, setLevel] = useState("All severities"),
+    [source, setSource] = useState("All sources"),
+    [detail, setDetail] = useState<Event | null>(null),
+    [start, setStart] = useState(""),
+    [end, setEnd] = useState(""),
+    [selection, setSelection] = useState<Event[]>([]),
+    [error, setError] = useState("");
+  const args = () => ({
+    page,
+    start: start ? Date.parse(start) / 1000 : null,
+    end: end ? Date.parse(end) / 1000 : null,
+  });
+  useEffect(() => {
+    void e.load(args());
+  }, [e.load, page, start, end]);
+  const found = e.value.filter(
+    (x) =>
+      (level === "All severities" || x.LevelDisplayName === level) &&
+      (source === "All sources" || x.ProviderName === source) &&
+      (!query ||
+        safe([x.Id, x.ProviderName, x.Message, x.LogName].join(" ")).includes(
+          query.toLowerCase(),
+        )),
+  );
+  return (
+    <>
+      <PageTitle
+        title="Event Logs"
+        description="Search warnings and errors from the Windows System and Application logs."
+        actions={
+          <Button
+            disabled={selection.length === 0}
+            onClick={() =>
+              void exportData(
+                "windows-events",
+                { events: selection },
+                "CSV",
+              ).catch((e) => setError(errorText(e)))
+            }
+          >
+            <Download size={16} /> Export selected ({selection.length})
+          </Button>
+        }
+      />
+      {(e.error || error) && <Notice bad>{e.error || error}</Notice>}
+      <Panel
+        title="Windows events"
+        subtitle="Search and source filters apply to the current 60-event page."
+        action={
+          <Button disabled={e.busy} onClick={() => void e.load(args())}>
+            <RefreshCw size={15} /> Refresh
+          </Button>
+        }
+      >
+        <div className="tools form-bar">
+          <Filter
+            value={query}
+            onChange={setQuery}
+            label="Search events or IDs"
+          />
+          <Select
+            label="Severity filter"
+            value={level}
+            onChange={setLevel}
+            options={[
+              "All severities",
+              ...new Set(
+                e.value.map((x) => x.LevelDisplayName).filter(Boolean),
+              ),
+            ]}
+          />
+          <Select
+            label="Event source"
+            value={source}
+            onChange={setSource}
+            options={[
+              "All sources",
+              ...new Set(e.value.map((x) => x.ProviderName).filter(Boolean)),
+            ]}
+          />
+          <label>
+            From{" "}
+            <input
+              type="datetime-local"
+              value={start}
+              onChange={(x) => {
+                setStart(x.target.value);
+                setPage(0);
+              }}
+            />
+          </label>
+          <label>
+            To{" "}
+            <input
+              type="datetime-local"
+              value={end}
+              onChange={(x) => {
+                setEnd(x.target.value);
+                setPage(0);
+              }}
+            />
+          </label>
+        </div>
+        {found.length ? (
+          <Table
+            headers={[
+              "Select",
+              "Time",
+              "Severity",
+              "Source",
+              "Log",
+              "ID",
+              "Details",
+            ]}
+          >
+            {found.map((x) => (
+              <tr key={eventKey(x)}>
+                <td>
+                  <input
+                    type="checkbox"
+                    aria-label={"Select event " + eventKey(x)}
+                    checked={selection.some((y) => eventKey(y) === eventKey(x))}
+                    onChange={(ev) =>
+                      setSelection(
+                        ev.target.checked
+                          ? [...selection, x]
+                          : selection.filter(
+                              (y) => eventKey(y) !== eventKey(x),
+                            ),
+                      )
+                    }
+                  />
+                </td>
+                <td>{date(x.ts)}</td>
+                <td>
+                  <Badge tone={tone(x.LevelDisplayName ?? "")}>
+                    {x.LevelDisplayName || "Unknown"}
+                  </Badge>
+                </td>
+                <td>{x.ProviderName}</td>
+                <td>{x.LogName}</td>
+                <td>{x.Id}</td>
+                <td>
+                  <Button variant="ghost" onClick={() => setDetail(x)}>
+                    Inspect
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </Table>
+        ) : (
+          <Empty
+            loading={e.busy}
+            text={e.busy ? "Loading Windows events" : "No matching events"}
+          />
+        )}
+        <div className="pagination">
+          <span>Page {page + 1}</span>
+          <Button
+            disabled={page === 0 || e.busy}
+            onClick={() => {
+              setSource("All sources");
+              setPage(page - 1);
+            }}
+          >
+            <ArrowLeft size={15} /> Previous
+          </Button>
+          <Button
+            disabled={e.value.length < 60 || page >= 99 || e.busy}
+            onClick={() => {
+              setSource("All sources");
+              setPage(page + 1);
+            }}
+          >
+            Next <ArrowRight size={15} />
+          </Button>
+        </div>
+      </Panel>
+      {detail && (
+        <Dialog
+          title={"Event " + detail.Id + " · " + detail.ProviderName}
+          close={() => setDetail(null)}
+        >
+          <Pairs
+            data={[
+              ["Time", date(detail.ts)],
+              ["Log", detail.LogName],
+              ["Severity", detail.LevelDisplayName],
+              [
+                "Explanation",
+                eventInfo[detail.Id] ??
+                  "Review the Windows provider message below.",
+              ],
+            ]}
+          />
+          <pre className="code-text">
+            {detail.Message || "Windows did not return an event message."}
+          </pre>
+        </Dialog>
+      )}
+    </>
+  );
+}
+export function Benchmarks({
+  config: c,
+  sample: s,
+}: {
+  config: Config;
+  sample: Sample | null;
+}) {
+  const r = useLoad<Bench[]>("records", []);
+  const [kind, setKind] = useState("CPU"),
+    [active, setActive] = useState(""),
+    [status, setStatus] = useState(0),
+    [error, setError] = useState(""),
+    [last, setLast] = useState<Bench | null>(null);
+  const control = useRef({ cancel: false, hot: false });
+  const hottest = Math.max(
+    ...[s?.metrics.cpuTemp, s?.metrics.gpuTemp, s?.metrics.driveTemp].filter(
+      (v): v is number => typeof v === "number",
+    ),
+    -Infinity,
+  );
+  useEffect(() => {
+    control.current.hot = hottest >= c.benchmarkLimit;
+  }, [hottest, c.benchmarkLimit]);
+  useEffect(() => {
+    void r.load({ kind: "benchmark" });
+    return () => {
+      control.current.cancel = true;
+    };
+  }, [r.load]);
+  useEffect(() => {
+    if (!active || active === "GPU") return;
+    const timer = setInterval(
+      () =>
+        void api<{ progress: number }>("benchmark_status")
+          .then((x) => setStatus(x.progress))
+          .catch(() => {}),
+      250,
+    );
+    return () => clearInterval(timer);
+  }, [active]);
+  async function run() {
+    setError("");
+    setStatus(0);
+    setLast(null);
+    setActive(kind);
+    control.current.cancel = false;
+    try {
+      if (kind === "GPU") {
+        const result = await gpuBenchmark(
+          c.benchSeconds,
+          () => control.current.cancel || control.current.hot,
+          setStatus,
+        );
+        setLast(await api<Bench>("gpu_result", result));
+      } else setLast(await api<Bench>("start_benchmark", { kind }));
+      void r.load({ kind: "benchmark" });
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setActive("");
+    }
+  }
+  return (
+    <>
+      <PageTitle
+        title="Benchmarks"
+        description="Run short, user-initiated performance tests and compare recorded results."
+      />
+      <Panel
+        title="Benchmark configuration"
+        icon={FlaskConical}
+        action={
+          <div className="tools">
+            <Select
+              label="Benchmark type"
+              value={kind}
+              onChange={setKind}
+              options={["CPU", "GPU", "Memory", "Storage", "Network"]}
+            />
+            <Button
+              variant="primary"
+              disabled={!!active || hottest >= c.benchmarkLimit}
+              onClick={() => void run()}
+            >
+              <Play size={15} /> Run benchmark
+            </Button>
+          </div>
+        }
+      >
+        <Pairs
+          data={[
+            ["Compute test duration", c.benchSeconds + " s"],
+            ["Temperature cutoff", c.benchmarkLimit + " °C"],
+            [
+              "Current peak sensor",
+              Number.isFinite(hottest)
+                ? num(hottest, 1) + " °C"
+                : "Unavailable",
+            ],
+            [
+              "Storage workload",
+              "128 MiB temporary file in the app data directory",
+            ],
+          ]}
+        />
+        {active && (
+          <div className="tools form-bar">
+            <progress
+              aria-label="Benchmark progress"
+              value={status}
+              max={100}
+            />
+            <span>
+              {active} · {status}%
+            </span>
+            <Button
+              onClick={() => {
+                control.current.cancel = true;
+                if (active !== "GPU") void api("cancel_benchmark");
+              }}
+            >
+              <CircleStop size={15} /> Cancel
+            </Button>
+          </div>
+        )}
+        {error && <Notice bad>{error}</Notice>}
+        {last && (
+          <Notice>
+            {last.kind} completed with {num(last.value, 1)} {last.unit}.
+          </Notice>
+        )}
+      </Panel>
+      <Panel title="Benchmark history">
+        {r.value.length ? (
+          <Table
+            headers={[
+              "Time",
+              "Test",
+              "Result",
+              "Duration",
+              "Additional readings",
+            ]}
+          >
+            {r.value.map((x, i) => (
+              <tr key={i}>
+                <td>{date(x.ts)}</td>
+                <td>{x.kind}</td>
+                <td>
+                  {num(x.value, 1)} {x.unit}
+                </td>
+                <td>{num(x.duration, 2)} s</td>
+                <td>
+                  {x.read != null
+                    ? num(x.read, 1) + " MiB/s buffered read"
+                    : x.loss != null
+                      ? pct(x.loss) + " loss"
+                      : (x.note ?? "—")}
+                </td>
+              </tr>
+            ))}
+          </Table>
+        ) : (
+          <Empty text="No benchmark results yet" />
+        )}
+      </Panel>
+    </>
+  );
 }

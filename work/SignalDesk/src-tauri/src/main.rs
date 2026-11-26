@@ -23,7 +23,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_notification::NotificationExt;
 
@@ -46,6 +46,7 @@ struct Service {
     metrics_error: RwLock<Option<String>>,
     settings_error: RwLock<Option<String>>,
     settings_gate: Mutex<()>,
+    window_gate: Mutex<()>,
     paused: AtomicBool,
     exit: AtomicBool,
     benchmark_busy: AtomicBool,
@@ -86,6 +87,7 @@ impl Service {
             metrics_error: RwLock::new(None),
             settings_error: RwLock::new(error),
             settings_gate: Mutex::new(()),
+            window_gate: Mutex::new(()),
             paused: AtomicBool::new(false),
             exit: AtomicBool::new(false),
             benchmark_busy: AtomicBool::new(false),
@@ -103,6 +105,13 @@ impl Service {
             }
         }
         let mut v = windows::inventory()?;
+        let (system, bios) = native::firmware();
+        if v["computer"].is_null() {
+            v["computer"] = system;
+        }
+        if v["bios"].is_null() {
+            v["bios"] = bios;
+        }
         let displays = native::graphics().1;
         if !displays.is_empty() {
             v["displays"] = json!(displays)
@@ -379,12 +388,28 @@ fn poll(app: AppHandle, s: Arc<Service>) {
             });
     }
 }
+fn make_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    WebviewWindowBuilder::from_config(app, &app.config().app.windows[0])?.build()
+}
 fn reveal(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.show();
-        let _ = win.unminimize();
-        let _ = win.set_focus();
-    }
+    let app = app.clone();
+    // WebView2 window creation must run off the Windows event callback.
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = app.state::<Arc<Service>>();
+        let _gate = service.window_gate.lock().unwrap();
+        let window = match app.get_webview_window("main") {
+            Some(w) => Ok(w),
+            None => make_window(&app),
+        };
+        match window {
+            Ok(w) => {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+            Err(error) => eprintln!("Unable to open SignalDesk dashboard: {error}"),
+        }
+    });
 }
 fn toggle_pause(app: &AppHandle, s: &Service) -> bool {
     let paused = !s.paused.fetch_xor(true, Relaxed);
@@ -766,6 +791,10 @@ fn main() {
             }
         }
     }
+    let mut context = tauri::generate_context!();
+    if std::env::args().any(|arg| arg == "--background") {
+        context.config_mut().app.windows[0].create = false;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
@@ -806,13 +835,41 @@ fn main() {
             let open = MenuItem::with_id(app, "open", "Open SignalDesk", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "Pause / resume", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Exit SignalDesk", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &pause, &quit])?;
+            let metrics =
+                MenuItem::with_id(app, "status", "Show current metrics", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&metrics, &open, &pause, &quit])?;
             let mut tray = TrayIconBuilder::with_id("monitor")
                 .menu(&menu)
                 .tooltip("SignalDesk · Monitoring")
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => reveal(app),
+                    "status" => {
+                        let state = app.state::<Arc<Service>>();
+                        let sample = state.latest.read().unwrap();
+                        let pct = |name: &str| {
+                            sample["metrics"][name]
+                                .as_f64()
+                                .map(|n| format!("{n:.0}%"))
+                                .unwrap_or_else(|| "Unavailable".into())
+                        };
+                        let status = if state.paused.load(Relaxed) {
+                            " · paused"
+                        } else {
+                            ""
+                        };
+                        let _ = app
+                            .notification()
+                            .builder()
+                            .title(format!("SignalDesk{status}"))
+                            .body(format!(
+                                "CPU {} · RAM {} · GPU {}",
+                                pct("cpu"),
+                                pct("memory"),
+                                pct("gpu")
+                            ))
+                            .show();
+                    }
                     "pause" => {
                         toggle_pause(app, &app.state::<Arc<Service>>());
                     }
@@ -838,11 +895,6 @@ fn main() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
-            if std::env::args().any(|a| a == "--background") {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
-                }
-            }
             let handle = app.handle().clone();
             std::thread::spawn(move || poll(handle, service));
             Ok(())
@@ -853,7 +905,7 @@ fn main() {
                 WindowEvent::CloseRequested { api, .. } => {
                     if s.config.read().unwrap().tray && !s.exit.load(Relaxed) {
                         api.prevent_close();
-                        let _ = w.hide();
+                        let _ = w.destroy();
                     } else {
                         s.exit.store(true, Relaxed);
                         w.app_handle().exit(0);
@@ -861,12 +913,22 @@ fn main() {
                 }
                 WindowEvent::Resized(_) => {
                     if s.config.read().unwrap().tray && w.is_minimized().unwrap_or(false) {
-                        let _ = w.hide();
+                        let _ = w.destroy();
                     }
                 }
                 _ => {}
             }
         })
-        .run(tauri::generate_context!())
-        .expect("desktop runtime");
+        .build(context)
+        .expect("desktop runtime")
+        .run(|app, event| {
+            if let RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                if !app.state::<Arc<Service>>().exit.load(Relaxed) {
+                    api.prevent_exit();
+                }
+            }
+        });
 }

@@ -11,15 +11,57 @@ pub fn script(code: &str) -> Result<Value, String> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
         .join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
-    let output=Command::new(exe).creation_flags(0x08000000).args(["-NoProfile","-NonInteractive","-Command",&format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; {code}")]).output().map_err(|e|e.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr)
+    use std::{
+        io::Read,
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let mut provider = Command::new(exe)
+        .creation_flags(0x08000000)
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; {code}"),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn().map_err(|e|e.to_string())?;
+    fn read_output(mut source: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut output = Vec::new();
+            let _ = source.read_to_end(&mut output);
+            output
+        })
+    }
+    let stdout = read_output(provider.stdout.take().unwrap());
+    let stderr = read_output(provider.stderr.take().unwrap());
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = provider.try_wait().map_err(|e| e.to_string())? {
+            break status;
+        }
+        if start.elapsed() >= Duration::from_secs(15) {
+            let _ = provider.kill();
+            let _ = provider.wait();
+            return Err("The Windows provider did not respond within 15 seconds.".into());
+        }
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    let bytes = stdout
+        .join()
+        .map_err(|_| "Windows provider output was interrupted.")?;
+    let errors = stderr
+        .join()
+        .map_err(|_| "Windows provider output was interrupted.")?;
+    if !status.success() {
+        return Err(String::from_utf8_lossy(&errors)
             .trim()
             .chars()
             .take(1000)
             .collect());
     }
-    serde_json::from_slice(&output.stdout)
+    serde_json::from_slice(&bytes)
         .map_err(|e| format!("Windows provider returned no readable data: {e}"))
 }
 pub fn battery() -> Value {
