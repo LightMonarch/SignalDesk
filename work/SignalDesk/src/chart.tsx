@@ -16,6 +16,7 @@ import {
   date,
   num,
   pct,
+  qty,
   temp,
   tsNow,
   type Config,
@@ -30,6 +31,7 @@ export const metricNames: Record<Metric, string> = {
   memory: "Memory",
   disk: "Storage used",
   cpuTemp: "CPU temperature",
+  cpuPower: "CPU package power",
   gpuTemp: "GPU temperature",
   battery: "Battery charge",
   batteryHealth: "Battery health",
@@ -68,8 +70,10 @@ const fmt = (v: unknown, k: Metric, c: Config) =>
       : percentKeys.has(k)
         ? pct(v)
         : k === "fan"
-          ? num(v) + " RPM"
-          : num(v, 1);
+          ? qty(v, "RPM")
+          : k === "cpuPower"
+            ? qty(v, "W", 1)
+            : num(v, 1);
 const axis = (v: number, k: Metric, c: Config) =>
   rateKeys.has(k)
     ? bytes(v, true)
@@ -77,7 +81,11 @@ const axis = (v: number, k: Metric, c: Config) =>
       ? num(v) + (c.fahrenheit ? "°F" : "°C")
       : percentKeys.has(k)
         ? v + "%"
-        : num(v);
+        : k === "cpuPower"
+          ? qty(v, "W")
+          : k === "fan"
+            ? qty(v, "RPM")
+            : num(v);
 const ranges = [
   [-1, "Live"],
   [900, "15 min"],

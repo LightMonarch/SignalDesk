@@ -1,12 +1,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod assistant;
+mod battery;
 mod benchmark;
 mod config;
 mod db;
+mod device;
 mod diagnostics;
 mod health;
 mod monitor;
 mod native;
+mod sensors;
+mod storage;
+mod telemetry;
+mod wifi;
 mod windows;
 
 use config::Config;
@@ -155,6 +161,15 @@ impl Service {
     }
 }
 
+fn wait_provider(service: &Service, seconds: u64) {
+    for _ in 0..seconds {
+        if service.exit.load(Relaxed) {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
 fn poll(app: AppHandle, s: Arc<Service>) {
     let provider = Arc::new(RwLock::new((Value::Null, None::<String>)));
     let provider_thread = provider.clone();
@@ -185,12 +200,38 @@ fn poll(app: AppHandle, s: Arc<Service>) {
             } else {
                 10
             };
-            for _ in 0..secs {
-                if provider_state.exit.load(Relaxed) {
-                    return;
-                }
-                std::thread::sleep(Duration::from_secs(1));
+            wait_provider(&provider_state, secs);
+        }
+    });
+    let storage_data = Arc::new(RwLock::new(Ok(Vec::new())));
+    let drive_thread = storage_data.clone();
+    let drive_state = s.clone();
+    std::thread::spawn(move || {
+        while !drive_state.exit.load(Relaxed) {
+            if !drive_state.paused.load(Relaxed) {
+                let fresh = storage::drives();
+                *drive_thread.write().unwrap() = fresh;
             }
+            let seconds = if drive_state.config.read().unwrap().low_resource {
+                90
+            } else {
+                40
+            };
+            wait_provider(&drive_state, seconds);
+        }
+    });
+    let native_data = Arc::new(RwLock::new(Value::Null));
+    let native_thread = native_data.clone();
+    let native_state = s.clone();
+    std::thread::spawn(move || {
+        while !native_state.exit.load(Relaxed) {
+            let config = native_state.config.read().unwrap().clone();
+            if !native_state.paused.load(Relaxed) {
+                let drives = storage_data.read().unwrap().clone();
+                let fresh = telemetry::native(&drives, config.sensor_loopback);
+                *native_thread.write().unwrap() = fresh;
+            }
+            wait_provider(&native_state, if config.low_resource { 12 } else { 3 });
         }
     });
     let mut monitor = monitor::Monitor::new();
@@ -214,8 +255,10 @@ fn poll(app: AppHandle, s: Arc<Service>) {
         }
         let c = s.config.read().unwrap().clone();
         let sensors = provider.read().unwrap().clone();
-        let mut sample = monitor.sample(&sensors.0);
-        sample["powerPlan"] = sensors.0["powerPlan"].clone();
+        let providers =
+            telemetry::combine(sensors.0, &native_data.read().unwrap(), c.sensor_loopback);
+        let mut sample = monitor.sample(&providers);
+        sample["powerPlan"] = providers["powerPlan"].clone();
         let score = health::assess(&sample, &c);
         sample["metrics"]["score"] = score["score"].clone();
         sample["health"] = score;
@@ -776,12 +819,52 @@ fn self_check(path: &Path) -> Reply<()> {
     let summary = json!({"status":"passed","liveCpu":snap["metrics"]["cpu"],"liveMemory":snap["metrics"]["memory"],"volumes":snap["disks"].as_array().map(Vec::len),"processCount":snap["metrics"]["processes"],"batteryApi":!snap["battery"].is_null(),"sqliteSamples":h.as_array().map(Vec::len),"score":score["score"],"startupRegistryReadable":windows::startup().is_array()});
     std::fs::write(path, serde_json::to_vec_pretty(&summary).map_err(err)?).map_err(err)
 }
+fn sensor_check(path: &Path) -> Reply<()> {
+    let drives = storage::drives();
+    let native = telemetry::native(&drives, false);
+    let windows = windows::sensors().unwrap_or(Value::Null);
+    let providers = telemetry::combine(windows, &native, false);
+    let sample = monitor::Monitor::new().sample(&providers);
+    let device_fields = |key: &str, fields: &[&str]| {
+        providers[key]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|row| {
+                fields
+                    .iter()
+                    .map(|&field| (field.to_owned(), json!(!row[field].is_null())))
+                    .collect::<serde_json::Map<_, _>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let summary = json!({
+        "cpuPackageTemperature": sample["metrics"]["cpuTemp"].is_number(),
+        "cpuPackagePower": sample["metrics"]["cpuPower"].is_number(),
+        "fastestFan": sample["metrics"]["fan"].is_number(),
+        "driveTemperature": sample["metrics"]["driveTemp"].is_number(),
+        "driveHealthFields": device_fields("driveHealth", &["status","temperature","wear","hours","startStop","powerCycles","readErrors","writeErrors","mediaErrors"]),
+        "batteryPresent": sample["battery"]["present"],
+        "batteryOnAc": sample["battery"]["ac"],
+        "batteryCapacityHealth": sample["battery"]["health"].is_number(),
+        "batteryRemainingTime": sample["battery"]["remaining"].is_number(),
+        "wifiFields": device_fields("wifi", &["state","signal","rssi","channel","frequencyMHz","rxMbps","txMbps"]),
+        "providers": providers["probes"],
+    });
+    std::fs::write(path, serde_json::to_vec_pretty(&summary).map_err(err)?).map_err(err)
+}
+
 fn main() {
     let mut args = std::env::args_os().skip(1);
     if let Some(flag) = args.next() {
-        if flag == "--self-check" {
+        if flag == "--self-check" || flag == "--sensor-check" {
             if let Some(path) = args.next() {
-                match self_check(Path::new(&path)) {
+                let check = if flag == "--sensor-check" {
+                    sensor_check
+                } else {
+                    self_check
+                };
+                match check(Path::new(&path)) {
                     Ok(()) => return,
                     Err(e) => {
                         let _ = std::fs::write(path, e);

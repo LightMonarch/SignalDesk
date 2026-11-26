@@ -148,6 +148,11 @@ export function Settings({
             "Use at least eight seconds between samples.",
           )}
           {b(
+            "sensorLoopback",
+            "Read LibreHardwareMonitor over loopback",
+            "Uses 127.0.0.1:8085 only when enabled. Start the local LibreHardwareMonitor web server first.",
+          )}
+          {b(
             "tray",
             "Keep monitoring in the tray",
             "Closing or minimizing the window hides it in the system tray.",

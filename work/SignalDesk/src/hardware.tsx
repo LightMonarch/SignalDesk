@@ -222,12 +222,20 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
           <Stat
             name="Package temperature"
             value={t(m.cpuTemp)}
+            detail={readingDetail(
+              s.cpu.temperatureReading,
+              "Requires a supported CPU sensor",
+            )}
             icon={Fan}
             tone="blue"
           />
           <Stat
             name="Package power"
             value={qty(s.cpu.power, "W", 1)}
+            detail={readingDetail(
+              s.cpu.powerReading,
+              "Requires a supported package-power sensor",
+            )}
             tone="purple"
           />
           <Stat name="Logical cores" value={num(s.cpu.logical)} tone="yellow" />
@@ -266,6 +274,7 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
         <Inventory page={page} s={s} />
         <MetricChart config={c} keys={["cpu"]} title="CPU utilization" />
         <MetricChart config={c} keys={["cpuTemp"]} title="CPU temperature" />
+        <MetricChart config={c} keys={["cpuPower"]} title="CPU package power" />
       </>
     );
   if (page === "GPU")
@@ -471,7 +480,16 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
         </div>
         <Panel title="Physical drives">
           <RawTable
-            data={p.physicalDisks ?? []}
+            data={
+              p.physicalDisks?.length
+                ? p.physicalDisks
+                : (p.driveHealth ?? []).map((d) => ({
+                    Model: d.name,
+                    Manufacturer: d.manufacturer,
+                    InterfaceType: d.bus,
+                    Status: d.status,
+                  }))
+            }
             columns={{
               Model: "Model",
               Manufacturer: "Manufacturer",
@@ -485,7 +503,7 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
         </Panel>
         <Panel
           title="Drive reliability counters"
-          subtitle="Windows storage-provider readings depend on permissions and drive firmware."
+          subtitle="Read and write errors are shown when the drive reports them individually. NVMe reports combined media errors and power cycles."
         >
           <RawTable
             data={p.driveHealth ?? []}
@@ -494,14 +512,31 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
               bus: "Bus",
               status: "Health",
               temperature: "Temperature",
-              wear: "Wear",
+              wear: "Wear used",
               hours: "Power-on hours",
               startStop: "Start/stop cycles",
+              powerCycles: "Power cycles",
               readErrors: "Read errors",
               writeErrors: "Write errors",
+              mediaErrors: "Media errors",
+              errorLogEntries: "Error log entries",
+              ataHoursRaw: "ATA SMART 09 raw",
+              source: "Source",
             }}
             format={{ temperature: t, wear: pct }}
           />
+          <ProviderNotes
+            rows={p.probes}
+            names={["Drive health"]}
+            includeAvailable={false}
+          />
+          {(p.driveHealth ?? [])
+            .filter((row) => row.unavailableReason)
+            .map((row, i) => (
+              <Notice key={i}>
+                {str(row.name)} · {str(row.unavailableReason)}
+              </Notice>
+            ))}
         </Panel>
         <MetricChart
           config={c}
@@ -535,11 +570,19 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
           <Stat
             name="Estimated capacity health"
             value={pct(m.batteryHealth)}
+            detail={
+              b?.healthSource ?? "Needs both design and full-charge capacity"
+            }
             tone="blue"
           />
           <Stat
             name="Power remaining"
-            value={duration(b?.remaining)}
+            value={b?.ac === true ? "On AC power" : duration(b?.remaining)}
+            detail={
+              b?.ac === true
+                ? "Runtime is estimated while discharging"
+                : (b?.remainingSource ?? "No discharge-time estimate reported")
+            }
             tone="purple"
           />
         </div>
@@ -568,13 +611,19 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
             columns={{
               manufacturer: "Manufacturer",
               model: "Model",
-              design: "Design mWh",
-              full: "Full charge mWh",
+              design: "Design capacity",
+              full: "Full-charge capacity",
+              remainingCapacity: "Remaining capacity",
+              unit: "Capacity unit",
               cycles: "Cycles",
               charge: "Charge mW",
               discharge: "Discharge mW",
+              source: "Source",
             }}
           />
+          {!b?.packs?.length && (
+            <ProviderNotes rows={p.probes} names={["Battery driver"]} />
+          )}
         </Panel>
         <MetricChart
           config={c}
@@ -588,26 +637,41 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
   return (
     <>
       <div className="stat-row">
-        <Stat name="CPU package" value={t(m.cpuTemp)} icon={Cpu} />
+        <Stat
+          name="CPU package"
+          value={t(m.cpuTemp)}
+          detail={readingDetail(
+            s.cpu.temperatureReading,
+            "No CPU package sensor reported",
+          )}
+          icon={Cpu}
+        />
         <Stat name="GPU peak" value={t(m.gpuTemp)} icon={Monitor} tone="blue" />
         <Stat
           name="Drive temperature"
           value={t(m.driveTemp)}
+          detail="Highest reported drive temperature"
           icon={Database}
           tone="purple"
         />
         <Stat
           name="Fastest fan"
           value={qty(m.fan, "RPM")}
+          detail={readingDetail(
+            s.fanReading,
+            "The controller must expose an RPM sensor",
+          )}
           icon={Fan}
           tone="yellow"
         />
       </div>
       <Panel
         title="Hardware sensor inventory"
-        subtitle="LibreHardwareMonitor sensors appear when its WMI provider is running and allows access."
+        subtitle="LibreHardwareMonitor can supply CPU package temperature, package power and fan RPM through WMI or an enabled loopback connection."
       >
         <Sensors data={p.sensors ?? []} c={c} />
+        <ProviderNotes rows={p.probes} />
+        {s.providerError && <Notice>{s.providerError}</Notice>}
       </Panel>
       <MetricChart
         config={c}
@@ -683,13 +747,43 @@ function NetworkPage({ s, c }: { s: Sample; c: Config }) {
             }}
           />
         </Panel>
-        <Panel title="Wi-Fi details">
+        <Panel
+          title="Wi-Fi details"
+          subtitle="Current adapter and link information from Windows WLAN."
+        >
           {s.providers?.wifi?.length ? (
-            <pre className="code-text">
-              {s.providers.wifi.map(str).join("\n")}
-            </pre>
+            <>
+              <RawTable
+                data={s.providers.wifi}
+                columns={{
+                  name: "Adapter",
+                  state: "Status",
+                  phy: "Standard",
+                  signal: "Signal",
+                  rssi: "RSSI",
+                  channel: "Channel",
+                  frequencyMHz: "Frequency",
+                  rxMbps: "Receive link",
+                  txMbps: "Transmit link",
+                }}
+                format={{
+                  signal: pct,
+                  rssi: (v) => qty(v, "dBm"),
+                  frequencyMHz: (v) => qty(v, "MHz"),
+                  rxMbps: (v) => qty(v, "Mb/s", 1),
+                  txMbps: (v) => qty(v, "Mb/s", 1),
+                }}
+              />
+              {s.providers.wifi
+                .filter((row) => row.unavailableReason)
+                .map((row, i) => (
+                  <Notice key={i}>{str(row.unavailableReason)}</Notice>
+                ))}
+            </>
+          ) : s.providers?.probes?.some((row) => row.name === "Wi-Fi") ? (
+            <ProviderNotes rows={s.providers.probes} names={["Wi-Fi"]} />
           ) : (
-            <Empty detail="Windows WLAN details depend on the adapter and location permissions." />
+            <Empty text="Reading Wi-Fi adapters…" loading />
           )}
         </Panel>
       </div>
@@ -834,5 +928,39 @@ function Sensors({ data, c }: { data: Raw[]; c: Config }) {
       text="No sensors exposed"
       detail="Start the LibreHardwareMonitor WMI provider for compatible hardware."
     />
+  );
+}
+
+function readingDetail(reading: Raw | null | undefined, empty: string) {
+  if (!reading) return empty;
+  return (
+    [reading.name, reading.source]
+      .filter((v) => typeof v === "string" && v.length > 0)
+      .join(" · ") || empty
+  );
+}
+function ProviderNotes({
+  rows,
+  names,
+  includeAvailable = true,
+}: {
+  rows?: Raw[];
+  names?: string[];
+  includeAvailable?: boolean;
+}) {
+  const selected = (rows ?? []).filter(
+    (row) =>
+      (!names || names.includes(String(row.name))) &&
+      (includeAvailable || row.status !== "Available"),
+  );
+  if (!selected.length) return null;
+  return (
+    <div className="telemetry-notes">
+      {selected.map((row, i) => (
+        <Notice key={i}>
+          {str(row.name)} · {str(row.detail)}
+        </Notice>
+      ))}
+    </div>
   );
 }

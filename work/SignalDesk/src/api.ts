@@ -5,6 +5,7 @@ export type Metric =
   | "memory"
   | "disk"
   | "cpuTemp"
+  | "cpuPower"
   | "gpuTemp"
   | "battery"
   | "batteryHealth"
@@ -79,6 +80,8 @@ export type Sample = {
     physical: number | null;
     logical: number;
     power: number | null;
+    powerReading?: Raw | null;
+    temperatureReading?: Raw | null;
     cores: { name: string; usage: number | null; clock: number | null }[];
   };
   memory: {
@@ -98,6 +101,8 @@ export type Sample = {
     charging: boolean | null;
     remaining: number | null;
     health?: number;
+    healthSource?: string;
+    remainingSource?: string;
     packs?: Raw[];
   } | null;
   disks: Disk[];
@@ -105,6 +110,7 @@ export type Sample = {
   connected: boolean | null;
   providers: Record<string, Raw[] | undefined> | null;
   providerError: string | null;
+  fanReading?: Raw | null;
   issues: Issue[];
   powerPlan?: string | null;
   inventory?: Raw;
@@ -124,6 +130,7 @@ export type Config = {
   tray: boolean;
   startup: boolean;
   lowResource: boolean;
+  sensorLoopback: boolean;
   theme: "dark" | "light" | "system";
   accent: "mint" | "blue" | "violet";
   fahrenheit: boolean;
@@ -188,6 +195,7 @@ export const defaults: Config = {
   tray: true,
   startup: false,
   lowResource: false,
+  sensorLoopback: false,
   theme: "dark",
   accent: "mint",
   fahrenheit: false,

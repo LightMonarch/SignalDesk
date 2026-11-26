@@ -364,7 +364,7 @@ function App() {
               <span>
                 <ShieldCheck size={14} /> Local monitoring
               </span>
-              <span>{s?.os ?? "Windows desktop"} · SignalDesk 1.0.0</span>
+              <span>{s?.os ?? "Windows desktop"} · SignalDesk 1.0.1</span>
             </footer>
           </div>
         </main>

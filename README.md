@@ -12,14 +12,19 @@ The builds are unsigned unless a Windows signing certificate is supplied to the 
 
 | Source | Readings |
 | --- | --- |
-| Native Windows APIs and sysinfo | CPU, memory, processes, volumes, network counters, link state, battery charge and power state |
+| Native Windows APIs and sysinfo | CPU usage, memory, processes, volumes, network counters, Wi-Fi connection quality, battery status and capacities |
 | DXGI and GDI | Physical graphics adapters, memory capacities, active display resolution and refresh rate |
 | Windows CIM and storage providers | Hardware inventory, graphics engine and memory counters, battery capacity, storage reliability and adapter details |
-| LibreHardwareMonitor WMI | Optional temperatures, clocks, fan speeds and power sensors exposed by detected hardware |
+| Windows storage driver and NVMe SMART | Read-only drive health, temperature, wear, lifetime counters and combined media errors where exposed |
+| LibreHardwareMonitor WMI or loopback | Optional CPU package temperature, package power, clocks and fan RPM exposed by detected hardware |
 | NVIDIA driver | Optional GPU telemetry when the driver supplies the NVIDIA System Management Interface utility |
 | Windows Event Log | Recent System and Application warnings and errors |
 
-Start LibreHardwareMonitor and enable its WMI provider for temperatures or fans Windows does not expose. The namespace is `root\LibreHardwareMonitor`. Run SignalDesk as a standard user. Provider access, driver availability and device firmware determine which readings appear. Protected processes, some startup locations, per-app network counters, full SMART tables and certain vendor-specific readings can be unavailable. GPU engine utilization is the busiest reported engine, which can differ from a vendor's utilization calculation.
+Start LibreHardwareMonitor for CPU package temperature, package watts and fan RPM. SignalDesk looks for its WMI namespace at `root\LibreHardwareMonitor`. If WMI access is restricted, start LibreHardwareMonitor's web server bound to localhost at port 8085 and enable **Read LibreHardwareMonitor over loopback** in SignalDesk Settings. The optional connector reads `127.0.0.1:8085`. Cooling and Sensors shows which providers responded.
+
+Battery health uses the full-charge and design capacity reported by Windows. Remaining runtime is shown on battery power when Windows gives an estimate or the driver exposes both remaining energy and a positive discharge rate. NVMe power-cycle counts and combined media errors have separate fields from start/stop cycles and read/write error counters. Windows and drive firmware determine which of those fields are available. On newer Windows versions SignalDesk uses the location-independent WLAN quality query where available. Older WLAN drivers can require Windows location access for connection details.
+
+Run SignalDesk as a standard user. Provider access, driver availability and device firmware determine which readings appear. Protected processes, some startup locations, per-app network counters, full SMART tables and certain vendor-specific readings can be unavailable. GPU engine utilization is the busiest reported engine, which can differ from a vendor's utilization calculation.
 
 Health is an operating-condition estimate. CPU and GPU utilization appear as performance readings and sustained alerts. Component scoring uses reported thermal or device state where available, memory and free-space headroom, storage health, battery capacity and link state. A component with no usable reading is excluded. Active weights are normalized, and a known missing battery contributes zero weight. The score is a weighted average rounded to an integer. See the score breakdown in Overview.
 
@@ -47,6 +52,8 @@ npm run tauri build -- --bundles nsis,msi
 ```
 
 Default release artifacts are under `work/SignalDesk/src-tauri/target/release/bundle`, or under the release directory specified by `CARGO_TARGET_DIR`. The application binary supports `signaldesk.exe --self-check <absolute-path-to-json>` for an isolated native telemetry and SQLite smoke check. `SIGNALDESK_DATA_DIR` points desktop smoke tests to a separate app-data directory.
+
+Use `signaldesk.exe --sensor-check <absolute-path-to-json>` to record the availability of the default Windows providers. The report lists available fields and provider messages. It excludes raw drive identifiers, network names and sampled metric values.
 
 The standalone x64 setup bootstrap can wrap an existing MSI when the NSIS compiler cannot run. It stages the MSI and runs Windows Installer, so both files install the same product. From `work/SignalDesk`, run `./packaging/build-bootstrap.ps1 -Msi <path-to-package.msi> -Output <path-to-setup.exe>`. Build and validate the MSI through Tauri on a host with a working Windows Installer service before public distribution.
 

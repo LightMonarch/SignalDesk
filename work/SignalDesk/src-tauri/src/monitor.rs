@@ -1,4 +1,4 @@
-use crate::{native, windows};
+use crate::{native, sensors, telemetry, windows};
 use serde_json::{json, Value};
 use std::time::Instant;
 use sysinfo::{
@@ -114,74 +114,29 @@ impl Monitor {
                     .any(|v| v["NetConnectionStatus"] == 2 && v["PhysicalAdapter"] == true)
             })
         });
-        let mut battery = windows::battery();
-        if battery["present"] == true {
-            let mut details = vec![];
-            for d in list(&s["batteryDesign"]) {
-                let id = &d["InstanceName"];
-                let other = |k: &str| {
-                    list(&s[k])
-                        .find(|r| r["InstanceName"] == *id)
-                        .cloned()
-                        .unwrap_or(Value::Null)
-                };
-                let full = other("batteryFull");
-                let status = other("batteryStatus");
-                let cycles = other("batteryCycles");
-                details.push(json!({"manufacturer":d["ManufactureName"],"model":d["DeviceName"],"design":d["DesignedCapacity"],"full":full["FullChargedCapacity"],"cycles":cycles["CycleCount"],"charge":status["ChargeRate"].as_u64().filter(|v|*v<u32::MAX as u64),"discharge":status["DischargeRate"].as_u64().filter(|v|*v<u32::MAX as u64)}));
-            }
-            let pairs: Vec<_> = details
-                .iter()
-                .filter_map(|d| {
-                    Some((
-                        d["design"]
-                            .as_f64()
-                            .filter(|n| *n > 0. && *n < u32::MAX as f64)?,
-                        d["full"]
-                            .as_f64()
-                            .filter(|n| *n > 0. && *n < u32::MAX as f64)?,
-                    ))
-                })
-                .collect();
-            let health = (!details.is_empty() && pairs.len() == details.len()).then(|| {
-                (100. * pairs.iter().map(|p| p.1).sum::<f64>()
-                    / pairs.iter().map(|p| p.0).sum::<f64>())
-                .clamp(0., 100.)
-            });
-            battery["health"] = json!(health);
-            battery["packs"] = json!(details);
-        }
+        let battery = telemetry::battery_sample(s);
         let gpu_temp = sensor(s, "/gpu", "Temperature", |name| {
             name.contains("core") || name.contains("hot")
         })
         .into_iter()
         .chain(list(&s["nvidia"]).filter_map(|d| d["temperature"].as_f64()))
         .reduce(f64::max);
-        let cpu_temp = sensor(s, "/", "Temperature", |name| {
-            name.contains("package") || name.contains("tdie") || name.contains("tctl")
-        });
+        let cpu_temp = sensors::cpu_reading(&s["sensors"], "Temperature");
+        let cpu_power = sensors::cpu_reading(&s["sensors"], "Power");
         let gpu_load = sensor(s, "/gpu", "Load", |name| name == "gpu core")
             .or_else(|| peak(list(&s["gpuEngines"]).filter_map(|e| e["utilization"].as_f64())))
             .or_else(|| peak(list(&s["nvidia"]).filter_map(|d| d["utilization"].as_f64())))
             .map(|n| n.clamp(0., 100.));
-        let fan = peak(
-            list(&s["sensors"])
-                .filter(|r| r["SensorType"] == "Fan")
-                .filter_map(|r| r["Value"].as_f64()),
-        );
+        let fan = sensors::fastest_fan(&s["sensors"]);
         let drive_temp = peak(
             list(&s["driveHealth"])
-                .filter_map(|r| r["temperature"].as_f64())
+                .filter_map(|row| row["temperature"].as_f64())
                 .chain(
                     list(&s["sensors"])
-                        .filter(|r| {
-                            r["SensorType"] == "Temperature"
-                                && r["Identifier"]
-                                    .as_str()
-                                    .is_some_and(|x| x.starts_with("/storage"))
-                        })
-                        .filter_map(|r| r["Value"].as_f64()),
-                ),
+                        .filter(|row| sensors::is_drive_sensor(row))
+                        .filter_map(|row| row["Value"].as_f64()),
+                )
+                .filter(|v| (-60. ..=190.).contains(v)),
         );
         let rate = |k: &str| {
             disks
@@ -195,9 +150,9 @@ impl Monitor {
                 .then(|| adapters.iter().filter_map(|a| a[k].as_f64()).sum::<f64>())
         };
         json!({"ts":crate::now(),"host":System::host_name(),"os":System::long_os_version(),"boot":System::boot_time(),"uptime":System::uptime(),
-        "cpu":{"name":cpu.map(|c|c.brand().trim()),"vendor":cpu.map(|c|c.vendor_id()),"architecture":System::cpu_arch(),"physical":self.sys.physical_core_count(),"logical":cores.len(),"cores":cores,"power":sensor(s,"/","Power",|name|name.contains("cpu package")||name=="package")},
-        "memory":memory,"disks":disks,"battery":battery,"adapters":adapters,"connected":connected,"providers":s,"processes":procs,
-        "metrics":{"cpu":cpu_usage,"gpu":gpu_load,"memory":(total>0).then(||100.*used as f64/total as f64),"disk":disk_pct,"cpuTemp":cpu_temp,"gpuTemp":gpu_temp,"fan":fan,"driveTemp":drive_temp,"diskRead":rate("read"),"diskWrite":rate("write"),"battery":battery["pct"],"batteryHealth":battery["health"],"rx":adapter_sum("rx"),"tx":adapter_sum("tx"),"processes":procs.len()}
+        "cpu":{"name":cpu.map(|c|c.brand().trim()),"vendor":cpu.map(|c|c.vendor_id()),"architecture":System::cpu_arch(),"physical":self.sys.physical_core_count(),"logical":cores.len(),"cores":cores,"power":cpu_power.as_ref().map(|(v,_)|*v),"powerReading":cpu_power.as_ref().map(|(_,row)|row),"temperatureReading":cpu_temp.as_ref().map(|(_,row)|row)},
+        "memory":memory,"disks":disks,"battery":battery,"adapters":adapters,"connected":connected,"providers":s,"fanReading":fan.as_ref().map(|(_,row)|row),"processes":procs,
+        "metrics":{"cpu":cpu_usage,"gpu":gpu_load,"memory":(total>0).then(||100.*used as f64/total as f64),"disk":disk_pct,"cpuTemp":cpu_temp.as_ref().map(|(v,_)|*v),"cpuPower":cpu_power.as_ref().map(|(v,_)|*v),"gpuTemp":gpu_temp,"fan":fan.as_ref().map(|(v,_)|*v),"driveTemp":drive_temp,"diskRead":rate("read"),"diskWrite":rate("write"),"battery":battery["pct"],"batteryHealth":battery["health"],"rx":adapter_sum("rx"),"tx":adapter_sum("tx"),"processes":procs.len()}
         })
     }
 }

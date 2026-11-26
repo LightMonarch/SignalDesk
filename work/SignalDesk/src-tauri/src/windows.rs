@@ -88,25 +88,28 @@ function cim($ns,$c){Get-CimInstance -Namespace $ns -ClassName $c -OperationTime
 $g=@(cim 'root\cimv2' 'Win32_VideoController' | Select-Object Name,DriverVersion,PNPDeviceID,AdapterCompatibility,ConfigManagerErrorCode,AdapterRAM,CurrentRefreshRate)
 $media=@(cim 'root\cimv2' 'Win32_DiskDrive' | Select-Object Model,Manufacturer,Size,InterfaceType,MediaType,Partitions,Index,Status)
 $health=@()
-if(Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue){$health=@(Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {$d=$_; $r=$d | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue; [ordered]@{name=[string]$d.FriendlyName;id=[string]$d.DeviceId;bus=[string]$d.BusType;status=[string]$d.HealthStatus;wear=$r.Wear;temperature=$r.Temperature;hours=$r.PowerOnHours;readErrors=$r.ReadErrorsTotal;writeErrors=$r.WriteErrorsTotal;startStop=$r.StartStopCycleCount}})}
-$t=@(cim 'root\LibreHardwareMonitor' 'Sensor' | Where-Object {$null -ne $_.Value} | Select-Object Name,Identifier,Parent,SensorType,Value,Min,Max)
+if(Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue){$health=@(Get-PhysicalDisk -ErrorAction SilentlyContinue | ForEach-Object {$d=$_; $r=$d | Get-StorageReliabilityCounter -ErrorAction SilentlyContinue; [ordered]@{name=[string]$d.FriendlyName;id=[string]$d.DeviceId;bus=[string]$d.BusType;status=[string]$d.HealthStatus;wear=$r.Wear;temperature=$r.Temperature;hours=$r.PowerOnHours;readErrors=$r.ReadErrorsTotal;writeErrors=$r.WriteErrorsTotal;startStop=$r.StartStopCycleCount;powerCycles=$r.PowerCycleCount;source="Windows storage reliability"}})}
+$provider='LibreHardwareMonitor WMI'
+$reason=$null;$data=@()
+try { $data=@(Get-CimInstance -Namespace 'root\LibreHardwareMonitor' -ClassName Sensor -OperationTimeoutSec 2 -ErrorAction Stop) } catch {
+    try { $data=@(Get-WmiObject -Namespace 'root\LibreHardwareMonitor' -Class Sensor -ErrorAction Stop) } catch { $reason=$_.Exception.Message }
+}
+$t=@($data | Where-Object {$null -ne $_.Value} | Select-Object Name,Identifier,Parent,SensorType,Value,Min,Max,@{Name='Source';Expression={'LibreHardwareMonitor WMI'}})
+$probe=@{name=$provider;status=if($t.Count){'Available'}else{'Unavailable'};detail=if($t.Count){[string]$t.Count+' readings returned.'}elseif($reason){$reason}else{'No sensors were exposed by the provider.'}}
 $videos=@(cim 'root\LibreHardwareMonitor' 'Hardware' | Where-Object {$_.HardwareType -match '^Gpu'} | Select-Object Name,Identifier,HardwareType)
 $engineRows=@(cim 'root\cimv2' 'Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine')
 $eng=@($engineRows | Group-Object {if($_.Name -match 'luid_(.+?)_phys_(\d+)_eng_(\d+)_engtype_(.+?)(?:#\d+)?$'){$Matches[1]+'~'+$Matches[2]+'~'+$Matches[3]+'~'+$Matches[4]}} | Where-Object Name | ForEach-Object { $v=$_.Name.Split('~'); @{adapter=$v[0];node=$v[1];engine=$v[2];kind=$v[3];utilization=[Math]::Min(100,($_.Group | Measure-Object UtilizationPercentage -Sum).Sum)} })
 $gpuProcesses=@($engineRows | Group-Object {if($_.Name -match '^pid_(\d+)_'){$Matches[1]}} | Where-Object Name | ForEach-Object {@{pid=[int]$_.Name;utilization=($_.Group | Measure-Object UtilizationPercentage -Maximum).Maximum}})
 $mem=@(cim 'root\cimv2' 'Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory' | Select-Object Name,DedicatedUsage,SharedUsage)
-$st=@(cim 'root\wmi' 'BatteryStatus' | Where-Object Active | Select-Object InstanceName,ChargeRate,DischargeRate,RemainingCapacity)
+$st=@(cim 'root\wmi' 'BatteryStatus' | Where-Object Active | Select-Object InstanceName,ChargeRate,DischargeRate,RemainingCapacity,Discharging)
 $sd=@(cim 'root\wmi' 'BatteryStaticData' | Select-Object InstanceName,DesignedCapacity,ManufactureName,DeviceName)
 $fc=@(cim 'root\wmi' 'BatteryFullChargedCapacity' | Select-Object InstanceName,FullChargedCapacity)
 $cy=@(cim 'root\wmi' 'BatteryCycleCount' | Select-Object InstanceName,CycleCount)
 $perf=@(cim 'root\cimv2' 'Win32_PerfFormattedData_PerfDisk_LogicalDisk' | Where-Object {$_.Name -ne '_Total'} | Select-Object Name,DiskReadBytesPersec,DiskWriteBytesPersec,PercentIdleTime)
 $adapters=@(cim 'root\cimv2' 'Win32_NetworkAdapter' | Where-Object {$_.NetConnectionID} | Select-Object Name,NetConnectionID,NetConnectionStatus,Speed,MACAddress,PhysicalAdapter)
-$wifi=@()
-$netsh=Join-Path $env:SystemRoot 'System32\netsh.exe'
-if(Test-Path $netsh){$wifi=@(& $netsh wlan show interfaces 2>$null | Select-String '^\s*(Name|State|SSID|Signal|Channel|Band|Radio type|Receive rate \(Mbps\)|Transmit rate \(Mbps\))\s*:' | ForEach-Object {$_.Line.Trim()})}
  $pow=Join-Path $env:SystemRoot 'System32\powercfg.exe'
 $power=$null;if(Test-Path $pow){$raw=& $pow /getactivescheme 2>$null;if($raw -match '\(([^)]+)\)\s*$'){$power=$Matches[1]}}
-[ordered]@{powerPlan=$power;gpus=$g;physicalDisks=$media;driveHealth=$health;sensors=$t;lhmGpus=$videos;gpuEngines=$eng;gpuProcesses=$gpuProcesses;gpuMemory=$mem;batteryStatus=$st;batteryDesign=$sd;batteryFull=$fc;batteryCycles=$cy;diskPerf=$perf;adapters=$adapters;wifi=$wifi} | ConvertTo-Json -Depth 7 -Compress
+[ordered]@{powerPlan=$power;gpus=$g;physicalDisks=$media;driveHealth=$health;sensors=$t;lhmGpus=$videos;gpuEngines=$eng;gpuProcesses=$gpuProcesses;gpuMemory=$mem;batteryStatus=$st;batteryDesign=$sd;batteryFull=$fc;batteryCycles=$cy;diskPerf=$perf;adapters=$adapters;sensorProbe=$probe} | ConvertTo-Json -Depth 7 -Compress
 "#,
     )
 }
