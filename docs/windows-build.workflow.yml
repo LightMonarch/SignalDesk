@@ -22,6 +22,7 @@ jobs:
           cache-dependency-path: work/SignalDesk/package-lock.json
       - run: rustup toolchain install stable --profile minimal
       - run: npm ci
+      - run: ./packaging/prepare-sensors.ps1
       - run: npm run build
       - run: npm test
       - run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml

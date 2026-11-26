@@ -1,3 +1,10 @@
+import {
+  ThermalAccess,
+  temperatureSource,
+  gpuTemperatureText,
+  powerState,
+} from "./components/thermals";
+import { DriveHealth } from "./components/drive-health";
 import { useEffect, useState } from "react";
 import {
   ArrowDownLeft,
@@ -224,7 +231,7 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
             value={t(m.cpuTemp)}
             detail={readingDetail(
               s.cpu.temperatureReading,
-              "Requires a supported CPU sensor",
+              "Enable the sensor helper or attach LibreHardwareMonitor",
             )}
             icon={Fan}
             tone="blue"
@@ -234,7 +241,7 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
             value={qty(s.cpu.power, "W", 1)}
             detail={readingDetail(
               s.cpu.powerReading,
-              "Requires a supported package-power sensor",
+              "A hardware provider is required",
             )}
             tone="purple"
           />
@@ -271,6 +278,16 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
             </div>
           </Panel>
         </div>
+        <ThermalAccess sample={s} />
+        <Panel title="CPU temperature sensors" icon={Fan}>
+          <Sensors
+            data={(p.sensors ?? []).filter((sensor) =>
+              sensor.SensorType === "Temperature" &&
+              /cpu/i.test(String(sensor.Identifier).split("/")[1] ?? ""),
+            )}
+            c={c}
+          />
+        </Panel>
         <Inventory page={page} s={s} />
         <MetricChart config={c} keys={["cpu"]} title="CPU utilization" />
         <MetricChart config={c} keys={["cpuTemp"]} title="CPU temperature" />
@@ -283,10 +300,17 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
         <div className="stat-row">
           <Stat name="Peak GPU engine" value={pct(m.gpu)} icon={Monitor} />
           <Stat
-            name="GPU temperature"
-            value={t(m.gpuTemp)}
+            name="GPU core temperature"
+            value={gpuTemperatureText(s, c)}
+            detail={temperatureSource(s.gpuReading) ?? undefined}
             icon={Fan}
             tone="blue"
+          />
+          <Stat
+            name="GPU hotspot"
+            value={t(m.gpuHotspot)}
+            detail={temperatureSource(s.gpuHotspotReading) ?? undefined}
+            tone="yellow"
           />
           <Stat
             name="Adapters discovered"
@@ -360,35 +384,35 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
             }}
           />
         </Panel>
-        {Boolean(p.nvidia?.length) && (
-          <Panel title="NVIDIA driver telemetry">
-            <RawTable
-              data={p.nvidia ?? []}
-              columns={{
-                name: "Adapter",
-                utilization: "Load",
-                temperature: "Temperature",
-                coreClock: "Core MHz",
-                memoryClock: "VRAM MHz",
-                power: "Power W",
-                fan: "Fan",
-                encode: "Encode",
-                decode: "Decode",
-                vramUsed: "VRAM used",
-                vramTotal: "VRAM capacity",
-              }}
-              format={{
-                utilization: pct,
-                temperature: t,
-                fan: pct,
-                encode: pct,
-                decode: pct,
-                vramUsed: (v) => bytes(v),
-                vramTotal: (v) => bytes(v),
-              }}
+        <Panel
+          title="Graphics power and temperature"
+          subtitle="Silicon Desk queries NVIDIA only when Windows reports the adapter active. Passive readings can supply integrated GPU temperatures."
+        >
+          {(p.graphicsPower ?? []).length ? (
+            <Table
+              headers={[
+                "Adapter",
+                "Power state",
+                "Core temperature",
+                "Provider",
+              ]}
+            >
+              {(p.graphicsPower ?? []).map((gpu, i) => (
+                <tr key={i}>
+                  <td>{str(gpu.name)}</td>
+                  <td>{powerState(gpu)}</td>
+                  <td>{t(gpu.temperature)}</td>
+                  <td>{str(gpu.source ?? gpu.detail)}</td>
+                </tr>
+              ))}
+            </Table>
+          ) : (
+            <Empty
+              text="Power state unavailable"
+              detail="See Cooling and Sensors for the Windows provider status."
             />
-          </Panel>
-        )}
+          )}
+        </Panel>
         <Panel title="Graphics sensors by hardware identifier">
           <Sensors
             data={(p.sensors ?? []).filter((x) =>
@@ -400,7 +424,7 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
         <MetricChart config={c} keys={["gpu"]} title="Graphics utilization" />
         <MetricChart
           config={c}
-          keys={["gpuTemp"]}
+          keys={["gpuTemp", "gpuHotspot"]}
           title="Graphics temperature"
         />
       </>
@@ -501,43 +525,12 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
             format={{ Size: (v) => bytes(Number(v) || null) }}
           />
         </Panel>
-        <Panel
-          title="Drive reliability counters"
-          subtitle="Read and write errors are shown when the drive reports them individually. NVMe reports combined media errors and power cycles."
-        >
-          <RawTable
-            data={p.driveHealth ?? []}
-            columns={{
-              name: "Drive",
-              bus: "Bus",
-              status: "Health",
-              temperature: "Temperature",
-              wear: "Wear used",
-              hours: "Power-on hours",
-              startStop: "Start/stop cycles",
-              powerCycles: "Power cycles",
-              readErrors: "Read errors",
-              writeErrors: "Write errors",
-              mediaErrors: "Media errors",
-              errorLogEntries: "Error log entries",
-              ataHoursRaw: "ATA SMART 09 raw",
-              source: "Source",
-            }}
-            format={{ temperature: t, wear: pct }}
-          />
-          <ProviderNotes
-            rows={p.probes}
-            names={["Drive health"]}
-            includeAvailable={false}
-          />
-          {(p.driveHealth ?? [])
-            .filter((row) => row.unavailableReason)
-            .map((row, i) => (
-              <Notice key={i}>
-                {str(row.name)} · {str(row.unavailableReason)}
-              </Notice>
-            ))}
-        </Panel>
+        <DriveHealth drives={p.driveHealth ?? []} fahrenheit={c.fahrenheit} />
+        <ProviderNotes
+          rows={p.probes}
+          names={["Drive health"]}
+          includeAvailable={false}
+        />
         <MetricChart
           config={c}
           keys={["diskRead", "diskWrite"]}
@@ -646,7 +639,13 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
           )}
           icon={Cpu}
         />
-        <Stat name="GPU peak" value={t(m.gpuTemp)} icon={Monitor} tone="blue" />
+        <Stat
+          name="GPU core"
+          value={gpuTemperatureText(s, c)}
+          detail={temperatureSource(s.gpuReading) ?? undefined}
+          icon={Monitor}
+          tone="blue"
+        />
         <Stat
           name="Drive temperature"
           value={t(m.driveTemp)}
@@ -665,6 +664,7 @@ function HardwareBody({ page, s, c }: { page: string; s: Sample; c: Config }) {
           tone="yellow"
         />
       </div>
+      <ThermalAccess sample={s} />
       <Panel
         title="Hardware sensor inventory"
         subtitle="LibreHardwareMonitor can supply CPU package temperature, package power and fan RPM through WMI or an enabled loopback connection."

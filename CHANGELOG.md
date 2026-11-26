@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.0
+
+- Renamed the desktop application to Silicon Desk while retaining the existing data location and installer upgrade ID.
+- Added an installed, separately elevated LibreHardwareMonitor CPU sensor helper and an in-app permission prompt.
+- Added persistent LibreHardwareMonitor WMI and direct NVIDIA NVML temperature reads guarded by Windows device power state.
+- Added live CPU and GPU temperature cards, GPU hotspot display, and power-state diagnostics.
+- Reworked Drive Health around a drive selector and added NVMe lifetime fields and raw ATA SMART attributes where available.
+
 ## 1.0.1
 
 - Added read-only NVMe and ATA health queries and Windows drive-temperature fallback.

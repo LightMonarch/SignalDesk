@@ -2,7 +2,6 @@ use ::windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE,
 };
 use serde_json::{json, Value};
-use std::{os::windows::process::CommandExt, path::PathBuf, process::Command};
 use windows_sys::Win32::{
     Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS},
     NetworkManagement::{
@@ -90,28 +89,6 @@ pub fn network_connected() -> Option<bool> {
         present.then_some(connected)
     }
 }
-pub fn nvidia() -> Vec<Value> {
-    let mut candidates = Vec::new();
-    if let Some(dir) = std::env::var_os("SystemRoot") {
-        candidates.push(PathBuf::from(dir).join(r"System32\nvidia-smi.exe"));
-    }
-    if let Some(dir) = std::env::var_os("ProgramFiles") {
-        candidates.push(PathBuf::from(dir).join(r"NVIDIA Corporation\NVSMI\nvidia-smi.exe"));
-    }
-    let Some(path) = candidates.into_iter().find(|p| p.is_file()) else {
-        return vec![];
-    };
-    let Ok(result)=Command::new(path).creation_flags(0x08000000).args(["--query-gpu=index,name,driver_version,utilization.gpu,memory.used,memory.total,temperature.gpu,clocks.gr,clocks.mem,power.draw,fan.speed,utilization.encoder,utilization.decoder","--format=csv,noheader,nounits"]).output() else{return vec![]};
-    if !result.status.success() {
-        return vec![];
-    }
-    String::from_utf8_lossy(&result.stdout).lines().filter_map(|line|{
-  let x:Vec<_>=line.split(',').map(str::trim).collect();if x.len()!=13{return None}
-  let n=|i:usize|x[i].parse::<f64>().ok();
-  Some(json!({"index":n(0),"name":x[1],"driver":x[2],"utilization":n(3),"vramUsed":n(4).map(|v|v*1048576.),"vramTotal":n(5).map(|v|v*1048576.),"temperature":n(6),"coreClock":n(7),"memoryClock":n(8),"power":n(9),"fan":n(10),"encode":n(11),"decode":n(12)}))
- }).collect()
-}
-
 #[derive(Clone, Copy)]
 pub struct CpuTimes {
     idle: u64,

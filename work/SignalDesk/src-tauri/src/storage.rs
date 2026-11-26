@@ -111,14 +111,18 @@ fn nvme_reading(data: &[u8]) -> Option<Value> {
             .map(u128::from_le_bytes)
     };
     // JSON numbers above JavaScript's safe integer range are returned as decimal strings.
-    let count = |offset| {
-        lifetime(offset).map(|v| {
-            if v <= (1u128 << 53) - 1 {
-                json!(v as u64)
-            } else {
-                json!(v.to_string())
-            }
-        })
+    let safe_number = |v: u128| {
+        if v <= (1u128 << 53) - 1 {
+            json!(v as u64)
+        } else {
+            json!(v.to_string())
+        }
+    };
+    let count = |offset| lifetime(offset).map(safe_number);
+    let data_bytes = |offset| {
+        lifetime(offset)
+            .and_then(|v| v.checked_mul(512_000))
+            .map(safe_number)
     };
     Some(json!({
         "status": if data[0] == 0 { "Healthy" } else { "Warning" },
@@ -126,8 +130,12 @@ fn nvme_reading(data: &[u8]) -> Option<Value> {
         "temperature": temperature,
         "wear": data[5],
         "spare": data[3],
+        "spareThreshold": data[4],
+        "dataReadBytes": data_bytes(32),
+        "dataWrittenBytes": data_bytes(48),
         "powerCycles": count(112),
         "hours": count(128),
+        "unsafeShutdowns": count(144),
         "mediaErrors": count(160),
         "errorLogEntries": count(176),
         "source": "NVMe SMART"
@@ -191,6 +199,22 @@ fn ata(device: &Device) -> Option<Value> {
             row["ataHoursRaw"] = json!(raw(9));
             row["temperature"] =
                 json!(attr(194).and_then(|bytes| plausible_temp(f64::from(bytes[0]))));
+            let labels = |id| match id {
+                4 => "Start/stop count",
+                5 => "Reallocated sectors",
+                9 => "Vendor lifetime counter",
+                12 => "Power cycle count",
+                194 => "Temperature",
+                197 => "Pending sectors",
+                198 => "Uncorrectable sectors",
+                199 => "Interface CRC errors",
+                _ => "Vendor-specific",
+            };
+            row["attributes"] = json!(data[2..362].chunks_exact(12).filter(|entry| entry[0] > 0)
+                .map(|entry| json!({"id":format!("{:02X}",entry[0]),"label":labels(entry[0]),
+                    "current":entry[3],"worst":entry[4],
+                    "raw":entry[5..11].iter().rev().map(|value|format!("{value:02X}")).collect::<String>()}))
+                .collect::<Vec<_>>());
         }
     }
     Some(row)
@@ -352,11 +376,13 @@ mod tests {
         data[0] = 4;
         data[1..3].copy_from_slice(&313u16.to_le_bytes());
         data[5] = 31;
+        data[32..48].copy_from_slice(&2u128.to_le_bytes());
         data[112..128].copy_from_slice(&94u128.to_le_bytes());
         data[128..144].copy_from_slice(&1258u128.to_le_bytes());
         data[160..176].copy_from_slice(&19u128.to_le_bytes());
         let log = nvme_reading(&data).unwrap();
         assert_eq!(log["wear"], 31);
+        assert_eq!(log["dataReadBytes"], 1_024_000);
         assert_eq!(log["hours"], 1258);
         assert_eq!(log["powerCycles"], 94);
         assert_eq!(log["mediaErrors"], 19);

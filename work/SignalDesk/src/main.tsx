@@ -196,7 +196,7 @@ function App() {
           </div>
           {!collapsed && (
             <div>
-              <b>SignalDesk</b>
+              <b>Silicon Desk</b>
               <span>System Health</span>
             </div>
           )}
@@ -364,7 +364,7 @@ function App() {
               <span>
                 <ShieldCheck size={14} /> Local monitoring
               </span>
-              <span>{s?.os ?? "Windows desktop"} · SignalDesk 1.0.1</span>
+              <span>{s?.os ?? "Windows desktop"} · Silicon Desk 1.1.0</span>
             </footer>
           </div>
         </main>

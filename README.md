@@ -1,10 +1,10 @@
-# SignalDesk
+# Silicon Desk
 
-SignalDesk is a Windows 10 and 11 system health dashboard built with Tauri 2, Rust, React, TypeScript, Tailwind CSS, shadcn/ui components and SQLite. It samples real system counters and stores performance history on the PC.
+Silicon Desk, formerly SignalDesk, is a Windows hardware dashboard built with Tauri 2, Rust, React, TypeScript, Tailwind CSS, shadcn/ui components and SQLite. It samples system counters and keeps performance history on the PC.
 
 ## Install
 
-Open the x64 setup executable or MSI and follow the installer prompts. Open SignalDesk from the Start menu. The separately distributed portable executable runs directly with WebView2 installed. Setup can download the Microsoft Edge WebView2 Runtime on a Windows installation where it is missing. Core monitoring works offline once the runtime is available.
+Open the x64 setup executable and keep the default Program Files installation location if you want the bundled CPU sensor helper. Open Silicon Desk from the Start menu. The portable executable runs with WebView2 installed and can use an existing Silicon Desk installation's helper or a running LibreHardwareMonitor provider. Core monitoring works offline once the WebView2 runtime is available. [Windows downloads](https://github.com/LightMonarch/SignalDesk/releases/latest)
 
 The builds are unsigned unless a Windows signing certificate is supplied to the release build. Settings and monitoring history normally live under `%LOCALAPPDATA%\local.signaldesk.monitor`. Use the tray menu to pause, reopen or exit the application. With tray mode enabled, closing the dashboard releases the WebView while the native monitor continues. Settings controls launch at sign-in and close-to-tray behavior.
 
@@ -16,15 +16,16 @@ The builds are unsigned unless a Windows signing certificate is supplied to the 
 | DXGI and GDI | Physical graphics adapters, memory capacities, active display resolution and refresh rate |
 | Windows CIM and storage providers | Hardware inventory, graphics engine and memory counters, battery capacity, storage reliability and adapter details |
 | Windows storage driver and NVMe SMART | Read-only drive health, temperature, wear, lifetime counters and combined media errors where exposed |
-| LibreHardwareMonitor WMI or loopback | Optional CPU package temperature, package power, clocks and fan RPM exposed by detected hardware |
-| NVIDIA driver | Optional GPU telemetry when the driver supplies the NVIDIA System Management Interface utility |
+| Bundled LibreHardwareMonitor helper | CPU package and core temperatures and package power, with Administrator consent and a working PawnIO driver |
+| LibreHardwareMonitor WMI or loopback | Passive CPU, GPU, hotspot, and cooling sensors exposed by an existing running provider |
+| NVIDIA NVML | GPU core temperature when Windows reports all detected NVIDIA adapters active |
 | Windows Event Log | Recent System and Application warnings and errors |
 
-Start LibreHardwareMonitor for CPU package temperature, package watts and fan RPM. SignalDesk looks for its WMI namespace at `root\LibreHardwareMonitor`. If WMI access is restricted, start LibreHardwareMonitor's web server bound to localhost at port 8085 and enable **Read LibreHardwareMonitor over loopback** in SignalDesk Settings. The optional connector reads `127.0.0.1:8085`. Cooling and Sensors shows which providers responded.
+Use **Enable sensors** on Overview, CPU, or Cooling and Sensors to start the bundled CPU helper. Windows prompts for Administrator permission for the helper. If the app reports that PawnIO is missing, install the official driver and restart Silicon Desk. For integrated GPU, hotspot, and fan readings, the app can read a running LibreHardwareMonitor provider through `root\LibreHardwareMonitor`. If WMI is restricted, bind LibreHardwareMonitor's web server to localhost on port 8085 and enable the loopback setting. Cooling and Sensors shows which providers responded. [Thermal setup and storage-tool comparison](docs/storage-and-thermals.md)
 
-Battery health uses the full-charge and design capacity reported by Windows. Remaining runtime is shown on battery power when Windows gives an estimate or the driver exposes both remaining energy and a positive discharge rate. NVMe power-cycle counts and combined media errors have separate fields from start/stop cycles and read/write error counters. Windows and drive firmware determine which of those fields are available. On newer Windows versions SignalDesk uses the location-independent WLAN quality query where available. Older WLAN drivers can require Windows location access for connection details.
+Battery health uses the full-charge and design capacity reported by Windows. Remaining runtime is shown on battery power when Windows gives an estimate or the driver exposes both remaining energy and a positive discharge rate. NVMe power-cycle counts and combined media errors have separate fields from start/stop cycles and read/write error counters. Windows and drive firmware determine which of those fields are available. On newer Windows versions Silicon Desk uses the location-independent WLAN quality query where available. Older WLAN drivers can require Windows location access for connection details.
 
-Run SignalDesk as a standard user. Provider access, driver availability and device firmware determine which readings appear. Protected processes, some startup locations, per-app network counters, full SMART tables and certain vendor-specific readings can be unavailable. GPU engine utilization is the busiest reported engine, which can differ from a vendor's utilization calculation.
+Run Silicon Desk as a standard user. Provider access, driver availability and device firmware determine which readings appear. Protected processes, some startup locations, per-app network counters, full SMART tables and certain vendor-specific readings can be unavailable. GPU engine utilization is the busiest reported engine, which can differ from a vendor's utilization calculation.
 
 Health is an operating-condition estimate. CPU and GPU utilization appear as performance readings and sustained alerts. Component scoring uses reported thermal or device state where available, memory and free-space headroom, storage health, battery capacity and link state. A component with no usable reading is excluded. Active weights are normalized, and a known missing battery contributes zero weight. The score is a weighted average rounded to an integer. See the score breakdown in Overview.
 
@@ -41,6 +42,7 @@ Install current Node.js LTS and npm, stable Rust for `x86_64-pc-windows-msvc`, M
 ```powershell
 Set-Location work/SignalDesk
 npm ci
+./packaging/prepare-sensors.ps1
 npm run tauri dev
 ```
 
@@ -61,14 +63,15 @@ The standalone x64 setup bootstrap can wrap an existing MSI when the NSIS compil
 
 - `work/SignalDesk/src` contains the application shell, shared controls, feature pages, typed frontend IPC models and report formats.
 - `src-tauri/src/monitor.rs`, `native.rs` and `windows.rs` collect native, DXGI, CIM and hardware provider readings.
+- `thermal.rs`, `sensors.rs` and `gpu.rs` manage the local CPU helper, persistent WMI and power-gated NVML readings. `packaging/ThermalReader.cs` hosts the LibreHardwareMonitor CPU library.
 - `db.rs` persists telemetry, aggregates and records. `config.rs` validates and persists preferences.
 - `health.rs`, `diagnostics.rs`, `benchmark.rs` and `assistant.rs` implement the feature engines.
 - `main.rs` wires Tauri commands, worker threads and tray integration.
 
 ## Release
 
-Update the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` and `tauri.conf.json`. Refresh the Cargo lockfile and changelog. Run both builds and the smoke tests. To enable the provided GitHub Actions workflow, copy `docs/windows-build.workflow.yml` to `.github/workflows/windows.yml`. Upload the EXE, MSI and SHA-256 sums to a versioned release in the private repository.
+Update the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` and `tauri.conf.json`. Refresh the Cargo lockfile and changelog. Run both builds and the smoke tests. To enable the provided GitHub Actions workflow, copy `docs/windows-build.workflow.yml` to `.github/workflows/windows.yml`. Publish the Windows binaries and their SHA-256 hashes in a versioned GitHub release.
 
 [Windows packaging](https://v2.tauri.app/distribute/windows-installer/) · [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) · [Ollama chat API](https://docs.ollama.com/api/chat)
 
-[Host verification and resource measurements](docs/verification.md)
+[Version 1.1.0 verification](docs/thermal-verification.md) · [Original host verification and resource measurements](docs/verification.md)

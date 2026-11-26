@@ -11,7 +11,7 @@ extern "system" {
     fn MessageBoxW(window: isize, text: *const u16, caption: *const u16, flags: u32) -> i32;
 }
 fn message(text: &str, flags: u32) {
-    let caption: Vec<u16> = OsStr::new("SignalDesk Setup").encode_wide().chain([0]).collect();
+    let caption: Vec<u16> = OsStr::new("Silicon Desk Setup").encode_wide().chain([0]).collect();
     let text: Vec<u16> = OsStr::new(text).encode_wide().chain([0]).collect();
     // Both strings are NUL-terminated and valid for the duration of the call.
     unsafe { MessageBoxW(0, text.as_ptr(), caption.as_ptr(), flags) };
@@ -19,7 +19,7 @@ fn message(text: &str, flags: u32) {
 struct Staging(PathBuf);
 impl Drop for Staging {
     fn drop(&mut self) {
-        let _ = fs::remove_file(self.0.join("SignalDesk.msi"));
+        let _ = fs::remove_file(self.0.join("SiliconDesk.msi"));
         let _ = fs::remove_dir(&self.0);
     }
 }
@@ -45,7 +45,7 @@ fn extract(path: &Path) -> io::Result<()> {
 }
 fn install(quiet: bool) -> io::Result<i32> {
     let staging = Staging::new()?;
-    let package = staging.0.join("SignalDesk.msi");
+    let package = staging.0.join("SiliconDesk.msi");
     extract(&package)?;
     let windows = std::env::var_os("SystemRoot").ok_or_else(|| io::Error::new(io::ErrorKind::NotFound,"SystemRoot is unavailable"))?;
     let mut command = Command::new(PathBuf::from(windows).join(r"System32\msiexec.exe"));
@@ -69,7 +69,7 @@ fn main() {
     let code = match result {
         Ok(0) => 0,
         Ok(3010) => {
-            if !quiet { message("SignalDesk was installed. Windows requires a restart to finish setup.", 0x40); }
+            if !quiet { message("Silicon Desk was installed. Windows requires a restart to finish setup.", 0x40); }
             3010
         }
         Ok(1602) => 1602,

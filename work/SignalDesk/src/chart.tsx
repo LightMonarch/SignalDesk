@@ -32,7 +32,8 @@ export const metricNames: Record<Metric, string> = {
   disk: "Storage used",
   cpuTemp: "CPU temperature",
   cpuPower: "CPU package power",
-  gpuTemp: "GPU temperature",
+  gpuTemp: "GPU core temperature",
+  gpuHotspot: "GPU hotspot",
   battery: "Battery charge",
   batteryHealth: "Battery health",
   rx: "Download",
@@ -50,7 +51,12 @@ const colors = [
   "var(--purple)",
   "var(--yellow)",
 ];
-const tempKeys = new Set<Metric>(["cpuTemp", "gpuTemp", "driveTemp"]);
+const tempKeys = new Set<Metric>([
+  "cpuTemp",
+  "gpuTemp",
+  "gpuHotspot",
+  "driveTemp",
+]);
 const rateKeys = new Set<Metric>(["rx", "tx", "diskRead", "diskWrite"]);
 const percentKeys = new Set<Metric>([
   "cpu",

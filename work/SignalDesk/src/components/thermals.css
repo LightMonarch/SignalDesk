@@ -1,0 +1,124 @@
+/* Temperature and drive health are the first readings on their respective pages. */
+.thermal-access {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 12px 15px;
+  border: 1px solid color-mix(in srgb, var(--blue) 34%, var(--line));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--blue) 7%, var(--surface));
+}
+.thermal-access-icon,
+.thermal-reading-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  color: var(--blue);
+  background: color-mix(in srgb, var(--blue) 13%, var(--surface));
+}
+.thermal-access-copy {
+  flex: 1;
+  min-width: 0;
+}
+.thermal-access-copy p {
+  color: var(--muted);
+  margin-top: 3px;
+  font-size: 11px;
+}
+.thermal-strip {
+  padding: 13px 15px 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.thermal-strip-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+.thermal-strip-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 680;
+}
+.thermal-strip-head h2 svg {
+  color: var(--accent);
+}
+.thermal-readouts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.thermal-reading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px;
+  min-width: 0;
+  background: var(--sub);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.thermal-reading-name,
+.thermal-reading small {
+  color: var(--muted);
+  font-size: 11px;
+}
+.thermal-reading strong {
+  display: block;
+  font-size: 21px;
+  letter-spacing: -0.035em;
+  line-height: 1.16;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.thermal-warning {
+  color: var(--yellow);
+}
+.thermal-note {
+  margin-left: auto;
+  text-align: right;
+}
+.drive-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 9px;
+  margin-bottom: 14px;
+}
+.drive-summary > div {
+  padding: 10px;
+  background: var(--sub);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.drive-summary small {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+}
+.drive-counters {
+  border-top: 1px solid var(--line);
+  padding: 9px 0 2px;
+}
+.drive-counters summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding-block: 5px;
+}
+.drive-raw {
+  font-family: ui-monospace, monospace;
+}
+@media (max-width: 950px) {
+  .thermal-note {
+    display: none;
+  }
+  .drive-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

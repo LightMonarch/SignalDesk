@@ -6,12 +6,14 @@ mod config;
 mod db;
 mod device;
 mod diagnostics;
+mod gpu;
 mod health;
 mod monitor;
 mod native;
 mod sensors;
 mod storage;
 mod telemetry;
+mod thermal;
 mod wifi;
 mod windows;
 
@@ -47,6 +49,7 @@ struct Service {
     dir: PathBuf,
     inventory_cache: Mutex<Option<(Instant, Value)>>,
     config: RwLock<Config>,
+    thermal: Mutex<thermal::Bridge>,
     db: Mutex<Store>,
     latest: RwLock<Value>,
     metrics_error: RwLock<Option<String>>,
@@ -88,6 +91,7 @@ impl Service {
             dir,
             inventory_cache: Mutex::new(None),
             config: RwLock::new(c),
+            thermal: Mutex::new(thermal::Bridge::new()),
             db: Mutex::new(db),
             latest: RwLock::new(Value::Null),
             metrics_error: RwLock::new(None),
@@ -182,17 +186,11 @@ fn poll(app: AppHandle, s: Arc<Service>) {
                     Err(e) => (Value::Null, Some(e)),
                 };
                 let (graphics, displays) = native::graphics();
-                let vendor = if graphics.iter().any(|d| d["vendor"] == "NVIDIA") {
-                    native::nvidia()
-                } else {
-                    vec![]
-                };
                 if next.0.is_null() {
                     next.0 = json!({})
                 }
                 next.0["dxgi"] = json!(graphics);
                 next.0["displays"] = json!(displays);
-                next.0["nvidia"] = json!(vendor);
                 *provider_thread.write().unwrap() = next;
             }
             let secs = if provider_state.config.read().unwrap().low_resource {
@@ -228,10 +226,51 @@ fn poll(app: AppHandle, s: Arc<Service>) {
             let config = native_state.config.read().unwrap().clone();
             if !native_state.paused.load(Relaxed) {
                 let drives = storage_data.read().unwrap().clone();
-                let fresh = telemetry::native(&drives, config.sensor_loopback);
+                let fresh = telemetry::native(&drives);
                 *native_thread.write().unwrap() = fresh;
             }
             wait_provider(&native_state, if config.low_resource { 12 } else { 3 });
+        }
+    });
+    // Keep COM sensor reads separate from the companion and NVIDIA polling.
+    let passive = Arc::new(RwLock::new(Value::Null));
+    let passive_thread = passive.clone();
+    let passive_state = s.clone();
+    std::thread::spawn(move || {
+        let mut reader = sensors::Wmi::new();
+        while !passive_state.exit.load(Relaxed) {
+            let config = passive_state.config.read().unwrap().clone();
+            if !passive_state.paused.load(Relaxed) {
+                let next = reader.poll(config.sensor_loopback);
+                *passive_thread.write().unwrap() = next;
+            }
+            std::thread::sleep(Duration::from_millis(if config.low_resource {
+                4000
+            } else {
+                1500
+            }));
+        }
+    });
+    let fast = Arc::new(RwLock::new(Value::Null));
+    let fast_thread = fast.clone();
+    let fast_state = s.clone();
+    std::thread::spawn(move || {
+        let mut gpu = gpu::Monitor::new();
+        while !fast_state.exit.load(Relaxed) {
+            let paused = fast_state.paused.load(Relaxed);
+            let helper = fast_state
+                .thermal
+                .try_lock()
+                .ok()
+                .map(|mut bridge| bridge.read(paused));
+            if paused {
+                gpu.pause();
+            } else {
+                let (graphics, error) = gpu.poll();
+                *fast_thread.write().unwrap() =
+                    json!({"helper":helper,"graphics":graphics,"graphicsError":error});
+            }
+            std::thread::sleep(Duration::from_millis(1500));
         }
     });
     let mut monitor = monitor::Monitor::new();
@@ -255,8 +294,13 @@ fn poll(app: AppHandle, s: Arc<Service>) {
         }
         let c = s.config.read().unwrap().clone();
         let sensors = provider.read().unwrap().clone();
-        let providers =
-            telemetry::combine(sensors.0, &native_data.read().unwrap(), c.sensor_loopback);
+        let mut providers = telemetry::combine(sensors.0, &native_data.read().unwrap());
+        telemetry::thermals(
+            &mut providers,
+            &fast.read().unwrap(),
+            &passive.read().unwrap(),
+            c.sensor_loopback,
+        );
         let mut sample = monitor.sample(&providers);
         sample["powerPlan"] = providers["powerPlan"].clone();
         let score = health::assess(&sample, &c);
@@ -414,7 +458,7 @@ fn poll(app: AppHandle, s: Arc<Service>) {
                     .unwrap_or_else(|| "—".into())
             };
             let _ = tray.set_tooltip(Some(format!(
-                "SignalDesk · CPU {} · RAM {} · GPU {}",
+                "Silicon Desk · CPU {} · RAM {} · GPU {}",
                 pct("cpu"),
                 pct("memory"),
                 pct("gpu")
@@ -450,7 +494,7 @@ fn reveal(app: &AppHandle) {
                 let _ = w.unminimize();
                 let _ = w.set_focus();
             }
-            Err(error) => eprintln!("Unable to open SignalDesk dashboard: {error}"),
+            Err(error) => eprintln!("Unable to open Silicon Desk dashboard: {error}"),
         }
     });
 }
@@ -459,10 +503,23 @@ fn toggle_pause(app: &AppHandle, s: &Service) -> bool {
     let _ = app.emit("paused-changed", paused);
     if paused {
         if let Some(t) = app.tray_by_id("monitor") {
-            let _ = t.set_tooltip(Some("SignalDesk · Monitoring paused"));
+            let _ = t.set_tooltip(Some("Silicon Desk · Monitoring paused"));
         }
     }
     paused
+}
+
+#[tauri::command]
+async fn enable_thermal(s: State<'_, Arc<Service>>) -> Reply<()> {
+    let service = s.inner().clone();
+    task(move || {
+        service
+            .thermal
+            .lock()
+            .map_err(err)?
+            .start(service.paused.load(Relaxed))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -821,9 +878,13 @@ fn self_check(path: &Path) -> Reply<()> {
 }
 fn sensor_check(path: &Path) -> Reply<()> {
     let drives = storage::drives();
-    let native = telemetry::native(&drives, false);
+    let native = telemetry::native(&drives);
     let windows = windows::sensors().unwrap_or(Value::Null);
-    let providers = telemetry::combine(windows, &native, false);
+    let mut providers = telemetry::combine(windows, &native);
+    let passive = sensors::Wmi::new().poll(false);
+    let (graphics, graphics_error) = gpu::Monitor::new().poll();
+    let fast = json!({"graphics":graphics,"graphicsError":graphics_error});
+    telemetry::thermals(&mut providers, &fast, &passive, false);
     let sample = monitor::Monitor::new().sample(&providers);
     let device_fields = |key: &str, fields: &[&str]| {
         providers[key]
@@ -882,6 +943,7 @@ fn main() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             snapshot,
+            enable_thermal,
             processes,
             process_publisher,
             settings,
@@ -914,16 +976,17 @@ fn main() {
                 None => app.path().app_local_data_dir()?,
             };
             let service = Arc::new(Service::open(dir).map_err(std::io::Error::other)?);
+            service.thermal.lock().unwrap().configure();
             app.manage(service.clone());
-            let open = MenuItem::with_id(app, "open", "Open SignalDesk", true, None::<&str>)?;
+            let open = MenuItem::with_id(app, "open", "Open Silicon Desk", true, None::<&str>)?;
             let pause = MenuItem::with_id(app, "pause", "Pause / resume", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Exit SignalDesk", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Exit Silicon Desk", true, None::<&str>)?;
             let metrics =
                 MenuItem::with_id(app, "status", "Show current metrics", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&metrics, &open, &pause, &quit])?;
             let mut tray = TrayIconBuilder::with_id("monitor")
                 .menu(&menu)
-                .tooltip("SignalDesk · Monitoring")
+                .tooltip("Silicon Desk · Monitoring")
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => reveal(app),
@@ -944,7 +1007,7 @@ fn main() {
                         let _ = app
                             .notification()
                             .builder()
-                            .title(format!("SignalDesk{status}"))
+                            .title(format!("Silicon Desk{status}"))
                             .body(format!(
                                 "CPU {} · RAM {} · GPU {}",
                                 pct("cpu"),

@@ -221,3 +221,183 @@ mod tests {
         assert_eq!(nodes[0]["Parent"], "/intelcpu/0");
     }
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct WmiSensor {
+    name: String,
+    identifier: String,
+    parent: String,
+    sensor_type: String,
+    value: Option<f32>,
+    min: Option<f32>,
+    max: Option<f32>,
+}
+
+pub struct Wmi {
+    connection: Option<wmi::WMIConnection>,
+    retry: Option<(std::time::Instant, String)>,
+}
+impl Wmi {
+    pub fn new() -> Self {
+        Self {
+            connection: None,
+            retry: None,
+        }
+    }
+    fn read(&mut self) -> Result<Vec<Value>, String> {
+        if let Some((since, reason)) = &self.retry {
+            if since.elapsed() < Duration::from_secs(25) {
+                return Err(reason.clone());
+            }
+        }
+        let result = (|| {
+            if self.connection.is_none() {
+                self.connection = Some(wmi::WMIConnection::with_namespace_path(
+                    r"root\LibreHardwareMonitor",
+                )?);
+            }
+            self.connection.as_ref().unwrap().raw_query::<WmiSensor>(
+                "SELECT Name,Identifier,Parent,SensorType,Value,Min,Max FROM Sensor",
+            )
+        })();
+        match result {
+            Ok(rows) => {
+                self.retry = None;
+                Ok(rows.into_iter().filter_map(|row| {
+                    let value = row.value.filter(|v| v.is_finite())?;
+                    Some(json!({"Name":row.name,"Identifier":row.identifier,"Parent":row.parent,
+                        "SensorType":row.sensor_type,"Value":value,
+                        "Min":row.min.filter(|v|v.is_finite()),"Max":row.max.filter(|v|v.is_finite()),
+                        "Source":"LibreHardwareMonitor WMI"}))
+                }).collect())
+            }
+            Err(error) => {
+                self.connection = None;
+                let detail = format!("{error}");
+                let lower = detail.to_ascii_lowercase();
+                let reason = if lower.contains("8004100e") || lower.contains("invalid namespace") {
+                    "LibreHardwareMonitor WMI namespace is missing. Start the provider or enable the installed sensor helper.".to_owned()
+                } else if lower.contains("80041003")
+                    || lower.contains("80070005")
+                    || lower.contains("access denied")
+                {
+                    "Windows denied access to LibreHardwareMonitor WMI. Use the installed helper or the loopback setting.".to_owned()
+                } else {
+                    format!("The LibreHardwareMonitor WMI connection failed: {detail}")
+                };
+                self.retry = Some((std::time::Instant::now(), reason.clone()));
+                Err(reason)
+            }
+        }
+    }
+
+    pub fn poll(&mut self, loopback: bool) -> Value {
+        let mut probes = Vec::new();
+        let mut loopback_rows = Vec::new();
+        if loopback {
+            match local_http() {
+                Ok(rows)=>{probes.push(json!({"name":"LibreHardwareMonitor loopback","status":"Available","detail":format!("{} readings returned.",rows.len())}));loopback_rows=rows;},
+                Err(reason)=>probes.push(json!({"name":"LibreHardwareMonitor loopback","status":"Unavailable","detail":reason})),
+            }
+        }
+        let rows = match self.read() {
+            Ok(rows) => {
+                let (status, detail) = if rows.is_empty() {
+                    ("Unavailable", "The namespace returned no sensors.".into())
+                } else {
+                    ("Available", format!("{} readings returned.", rows.len()))
+                };
+                probes.push(
+                    json!({"name":"LibreHardwareMonitor WMI","status":status,"detail":detail}),
+                );
+                rows
+            }
+            Err(reason) => {
+                probes.push(json!({"name":"LibreHardwareMonitor WMI","status":"Unavailable","detail":reason}));
+                Vec::new()
+            }
+        };
+        json!({"rows":rows,"loopback":loopback_rows,"probes":probes,"sampledAt":crate::now()})
+    }
+}
+
+fn vendor_sensor(id: &str) -> Option<&'static str> {
+    let key = id.split('/').nth(1)?.to_ascii_lowercase();
+    if key.contains("nvidia") {
+        Some("NVIDIA")
+    } else if key.contains("amd") || key.contains("ati") {
+        Some("AMD")
+    } else if key.contains("intel") {
+        Some("Intel")
+    } else {
+        None
+    }
+}
+
+pub fn gpu_reading(snapshot: &Value, hotspot: bool) -> Option<(f64, Value)> {
+    let graphics = &snapshot["graphicsPower"];
+    let can_use = |vendor: &str| {
+        // External sensor identifiers are not stable PCI addresses. If this vendor has a
+        // sleeping adapter, avoid attributing an external temperature to the wrong adapter.
+        !records(graphics).any(|row| row["vendor"] == vendor && row["state"] == "Sleeping")
+    };
+    let passive = records(&snapshot["sensors"])
+        .filter(|row| row["SensorType"] == "Temperature")
+        .filter_map(|row| {
+            let id = row["Identifier"].as_str()?;
+            let group = id.split('/').nth(1)?.to_ascii_lowercase();
+            if !group.contains("gpu") {
+                return None;
+            }
+            let vendor = vendor_sensor(id);
+            if vendor.is_some_and(|v| !can_use(v)) {
+                return None;
+            }
+            let label = name(row);
+            let is_hot = label.contains("hot spot")
+                || label.contains("hotspot")
+                || label.contains("junction");
+            let is_core = label == "gpu core"
+                || label == "gpu temperature"
+                || label == "gpu core temperature"
+                || label == "gpu die";
+            if if hotspot { !is_hot } else { !is_core } {
+                return None;
+            }
+            let temp = row["Value"]
+                .as_f64()
+                .filter(|v| (-30. ..=160.).contains(v))?;
+            Some((
+                temp,
+                json!({"name":row["Name"],"source":row["Source"],"vendor":vendor}),
+            ))
+        });
+    let native = records(graphics)
+        .filter(|row| !hotspot && row["state"] == "Active")
+        .filter_map(|row| {
+            Some((
+                row["temperature"].as_f64()?,
+                json!({"name":row["name"],"source":row["source"],"vendor":row["vendor"]}),
+            ))
+        });
+    passive.chain(native).max_by(|a, b| a.0.total_cmp(&b.0))
+}
+
+#[cfg(test)]
+mod gpu_selection_tests {
+    use super::*;
+    #[test]
+    fn sleeping_vendor_uses_the_measured_integrated_gpu() {
+        let sample = json!({
+            "graphicsPower":[{"vendor":"NVIDIA","state":"Sleeping"},{"vendor":"Intel","state":"Active"}],
+            "sensors":[
+                {"Identifier":"/gpu-nvidia/0/temperature/0","Name":"GPU Core","SensorType":"Temperature","Value":75},
+                {"Identifier":"/gpu-intel/0/temperature/0","Name":"GPU Core","SensorType":"Temperature","Value":48},
+                {"Identifier":"/gpu-intel/0/temperature/1","Name":"GPU Hot Spot","SensorType":"Temperature","Value":62}
+            ]
+        });
+        assert_eq!(gpu_reading(&sample, false).unwrap().0, 48.);
+        assert_eq!(gpu_reading(&sample, true).unwrap().0, 62.);
+    }
+}

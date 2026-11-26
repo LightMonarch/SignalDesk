@@ -1,10 +1,10 @@
 use crate::{battery, sensors, storage, wifi, windows};
 use serde_json::{json, Value};
 
-pub fn native(health: &Result<Vec<Value>, String>, loopback: bool) -> Value {
+pub fn native(health: &Result<Vec<Value>, String>) -> Value {
     let battery = battery::packs();
     let wlan = wifi::connections();
-    let mut probes = vec![
+    let probes = vec![
         state(
             "Drive health",
             health,
@@ -17,19 +17,8 @@ pub fn native(health: &Result<Vec<Value>, String>, loopback: bool) -> Value {
         ),
         state("Wi-Fi", &wlan, "Windows WLAN reported no Wi-Fi interfaces."),
     ];
-    let from_http = if loopback {
-        let rows = sensors::local_http();
-        probes.push(state(
-            "LibreHardwareMonitor loopback",
-            &rows,
-            "No readings were exposed.",
-        ));
-        rows.unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     json!({"nativeDriveHealth":health.as_ref().ok(),"nativeBattery":battery.ok(),
-        "batteryAggregate":battery::aggregate(),"wifi":wlan.ok(),"localSensors":from_http,"probes":probes})
+        "batteryAggregate":battery::aggregate(),"wifi":wlan.ok(),"probes":probes})
 }
 
 fn state(name: &str, result: &Result<Vec<Value>, String>, empty: &str) -> Value {
@@ -42,7 +31,7 @@ fn state(name: &str, result: &Result<Vec<Value>, String>, empty: &str) -> Value 
     }
 }
 
-pub fn combine(mut system: Value, native: &Value, loopback: bool) -> Value {
+pub fn combine(mut system: Value, native: &Value) -> Value {
     if !system.is_object() {
         system = json!({});
     }
@@ -51,20 +40,7 @@ pub fn combine(mut system: Value, native: &Value, loopback: bool) -> Value {
         rows(native, "nativeDriveHealth"),
         &rows(&system, "driveHealth")
     ));
-    let mut thermal = rows(&system, "sensors");
-    if loopback {
-        sensors::merge(&mut thermal, rows(native, "localSensors"));
-    }
-    system["sensors"] = json!(thermal);
-    let mut probes = rows(native, "probes");
-    if !loopback {
-        probes.retain(|row| row["name"] != "LibreHardwareMonitor loopback");
-    }
-    if !system["sensorProbe"].is_null() {
-        probes.push(system["sensorProbe"].take());
-    }
-    system["probes"] = json!(probes);
-    for key in ["nativeBattery", "batteryAggregate", "wifi"] {
+    for key in ["nativeBattery", "batteryAggregate", "wifi", "probes"] {
         system[key] = native[key].clone();
     }
     system
@@ -181,4 +157,40 @@ fn capacity_pair(pack: &Value) -> Option<(u64, u64)> {
         valid(&pack["design"]).filter(|&v| v > 0)?,
         valid(&pack["full"]).filter(|&v| v > 0)?,
     ))
+}
+
+pub fn thermals(system: &mut Value, fast: &Value, passive: &Value, loopback: bool) {
+    let rows = |source: &Value, key: &str| source[key].as_array().cloned().unwrap_or_default();
+    let fresh = passive["sampledAt"]
+        .as_i64()
+        .is_some_and(|time| crate::now().abs_diff(time) <= 9);
+    let mut values = if fresh {
+        rows(passive, "rows")
+    } else {
+        Vec::new()
+    };
+    if fresh && loopback {
+        sensors::merge(&mut values, rows(passive, "loopback"));
+    }
+    sensors::merge(&mut values, rows(&fast["helper"], "sensors"));
+    system["sensors"] = json!(values);
+    system["graphicsPower"] = fast["graphics"].clone();
+    system["thermalAccess"] = fast["helper"].clone();
+    if let Some(helper) = system["thermalAccess"].as_object_mut() {
+        helper.remove("sensors");
+        helper.remove("timestamp");
+    }
+
+    let mut probes = rows(system, "probes");
+    if fresh {
+        probes.extend(
+            rows(passive, "probes")
+                .into_iter()
+                .filter(|row| loopback || row["name"] != "LibreHardwareMonitor loopback"),
+        );
+    }
+    if let Some(error) = fast["graphicsError"].as_str() {
+        probes.push(json!({"name":"Graphics power states","status":"Unavailable","detail":error}));
+    }
+    system["probes"] = json!(probes);
 }

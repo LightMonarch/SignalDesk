@@ -7,6 +7,7 @@ export type Metric =
   | "cpuTemp"
   | "cpuPower"
   | "gpuTemp"
+  | "gpuHotspot"
   | "battery"
   | "batteryHealth"
   | "rx"
@@ -111,6 +112,9 @@ export type Sample = {
   providers: Record<string, Raw[] | undefined> | null;
   providerError: string | null;
   fanReading?: Raw | null;
+  gpuReading?: Raw | null;
+  gpuHotspotReading?: Raw | null;
+  thermalAccess?: { state: string; detail: string; installed: boolean } | null;
   issues: Issue[];
   powerPlan?: string | null;
   inventory?: Raw;

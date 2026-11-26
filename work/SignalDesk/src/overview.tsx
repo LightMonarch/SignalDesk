@@ -1,3 +1,8 @@
+import {
+  ThermalAccess,
+  ThermalStrip,
+  gpuTemperatureText,
+} from "./components/thermals";
 import { useEffect, useState } from "react";
 import {
   Activity,
@@ -171,7 +176,7 @@ export function Overview({
       <Stat
         name="GPU load"
         value={pct(m.gpu)}
-        detail={temp(m.gpuTemp, c.fahrenheit) + " GPU temperature"}
+        detail={gpuTemperatureText(s, c) + " GPU temperature"}
         icon={Monitor}
         tone="blue"
       />
@@ -246,7 +251,7 @@ export function Overview({
         <div className="status-list">
           {[
             ["CPU temperature", temp(m.cpuTemp, c.fahrenheit)],
-            ["GPU temperature", temp(m.gpuTemp, c.fahrenheit)],
+            ["GPU temperature", gpuTemperatureText(s, c)],
             [
               "Fastest fan",
               typeof fan === "number" ? num(fan) + " RPM" : "Unavailable",
@@ -296,6 +301,12 @@ export function Overview({
           </>
         }
       />
+      <ThermalStrip
+        sample={s}
+        config={c}
+        open={() => go("Cooling and Sensors")}
+      />
+      <ThermalAccess sample={s} startup />
       <div className="overview-grid">
         {active
           .filter((k) => !c.hiddenWidgets.includes(k))

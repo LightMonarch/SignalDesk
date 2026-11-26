@@ -115,12 +115,8 @@ impl Monitor {
             })
         });
         let battery = telemetry::battery_sample(s);
-        let gpu_temp = sensor(s, "/gpu", "Temperature", |name| {
-            name.contains("core") || name.contains("hot")
-        })
-        .into_iter()
-        .chain(list(&s["nvidia"]).filter_map(|d| d["temperature"].as_f64()))
-        .reduce(f64::max);
+        let gpu_temp = sensors::gpu_reading(s, false);
+        let gpu_hotspot = sensors::gpu_reading(s, true);
         let cpu_temp = sensors::cpu_reading(&s["sensors"], "Temperature");
         let cpu_power = sensors::cpu_reading(&s["sensors"], "Power");
         let gpu_load = sensor(s, "/gpu", "Load", |name| name == "gpu core")
@@ -151,8 +147,8 @@ impl Monitor {
         };
         json!({"ts":crate::now(),"host":System::host_name(),"os":System::long_os_version(),"boot":System::boot_time(),"uptime":System::uptime(),
         "cpu":{"name":cpu.map(|c|c.brand().trim()),"vendor":cpu.map(|c|c.vendor_id()),"architecture":System::cpu_arch(),"physical":self.sys.physical_core_count(),"logical":cores.len(),"cores":cores,"power":cpu_power.as_ref().map(|(v,_)|*v),"powerReading":cpu_power.as_ref().map(|(_,row)|row),"temperatureReading":cpu_temp.as_ref().map(|(_,row)|row)},
-        "memory":memory,"disks":disks,"battery":battery,"adapters":adapters,"connected":connected,"providers":s,"fanReading":fan.as_ref().map(|(_,row)|row),"processes":procs,
-        "metrics":{"cpu":cpu_usage,"gpu":gpu_load,"memory":(total>0).then(||100.*used as f64/total as f64),"disk":disk_pct,"cpuTemp":cpu_temp.as_ref().map(|(v,_)|*v),"cpuPower":cpu_power.as_ref().map(|(v,_)|*v),"gpuTemp":gpu_temp,"fan":fan.as_ref().map(|(v,_)|*v),"driveTemp":drive_temp,"diskRead":rate("read"),"diskWrite":rate("write"),"battery":battery["pct"],"batteryHealth":battery["health"],"rx":adapter_sum("rx"),"tx":adapter_sum("tx"),"processes":procs.len()}
+        "memory":memory,"disks":disks,"battery":battery,"adapters":adapters,"connected":connected,"providers":s,"fanReading":fan.as_ref().map(|(_,row)|row),"gpuReading":gpu_temp.as_ref().map(|(_,row)|row),"gpuHotspotReading":gpu_hotspot.as_ref().map(|(_,row)|row),"thermalAccess":s["thermalAccess"],"processes":procs,
+        "metrics":{"cpu":cpu_usage,"gpu":gpu_load,"memory":(total>0).then(||100.*used as f64/total as f64),"disk":disk_pct,"cpuTemp":cpu_temp.as_ref().map(|(v,_)|*v),"cpuPower":cpu_power.as_ref().map(|(v,_)|*v),"gpuTemp":gpu_temp.as_ref().map(|(v,_)|*v),"gpuHotspot":gpu_hotspot.as_ref().map(|(v,_)|*v),"fan":fan.as_ref().map(|(v,_)|*v),"driveTemp":drive_temp,"diskRead":rate("read"),"diskWrite":rate("write"),"battery":battery["pct"],"batteryHealth":battery["health"],"rx":adapter_sum("rx"),"tx":adapter_sum("tx"),"processes":procs.len()}
         })
     }
 }
