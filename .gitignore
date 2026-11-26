@@ -1,0 +1,6 @@
+# Keep dashboard source and lockfiles visible to Git. Ignore local build tooling.
+/work/*
+!/work/SignalDesk/
+
+# Packaged deliverables are generated from the source tree.
+/outputs/
