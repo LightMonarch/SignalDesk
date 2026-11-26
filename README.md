@@ -41,6 +41,7 @@ npm run tauri dev
 
 ```powershell
 npm run build
+npm test
 cargo test --release --locked --manifest-path src-tauri/Cargo.toml
 npm run tauri build -- --bundles nsis,msi
 ```
@@ -62,3 +63,5 @@ The standalone x64 setup bootstrap can wrap an existing MSI when the NSIS compil
 Update the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml` and `tauri.conf.json`. Refresh the Cargo lockfile and changelog. Run both builds and the smoke tests. To enable the provided GitHub Actions workflow, copy `docs/windows-build.workflow.yml` to `.github/workflows/windows.yml`. Upload the EXE, MSI and SHA-256 sums to a versioned release in the private repository.
 
 [Windows packaging](https://v2.tauri.app/distribute/windows-installer/) · [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor) · [Ollama chat API](https://docs.ollama.com/api/chat)
+
+[Host verification and resource measurements](docs/verification.md)

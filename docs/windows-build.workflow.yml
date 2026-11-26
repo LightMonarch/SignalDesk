@@ -23,6 +23,7 @@ jobs:
       - run: rustup toolchain install stable --profile minimal
       - run: npm ci
       - run: npm run build
+      - run: npm test
       - run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
       - run: npm run tauri build -- --bundles nsis,msi
       - name: Verify live telemetry
